@@ -26,8 +26,11 @@ class LineItem(BaseModel):
     revision: str = Field(
         description=(
             'הוצאה – מתוך הסעיף "מסמכים הקשורים להזמנת הפריט". '
+            "שים לב: הטקסט בעברית (RTL). הערך של הוצאה הוא מה שמופיע "
+            "משמאל למילה \"הוצאה\" – בדרך כלל אות בודדת באנגלית "
+            '(A, B, C…) או "-" בלבד. '
             'אם הערך הוא "-" יש להחזיר "-". '
-            'אם הערך חסר או ריק לחלוטין יש להחזיר "לא צוין בבל\\"מ". '
+            'אם אין ערך כלל (ריק או חסר) יש להחזיר "לא מצוין בבל\\"מ". '
             "אחרת יש להחזיר את הערך המדויק."
         )
     )
@@ -35,7 +38,9 @@ class LineItem(BaseModel):
 
 class PurchaseOrder(BaseModel):
     balam_number: str = Field(description='מספר בל"מ')
-    buyer_name: str = Field(description="שם קניין")
+    buyer_name: str = Field(
+        description="שם הקניין – בדיוק כפי שמופיע במסמך (עברית או אנגלית), ללא תרגום"
+    )
     line_items: list[LineItem] = Field(
         description='רשימת שורות ההזמנה (מספר שורה 10, 20, 30 וכו\')'
     )
@@ -66,7 +71,8 @@ SYSTEM_PROMPT = """\
 
 שדות גלובליים (שדה אחד לכל המסמך):
 - balam_number: מספר בל"מ
-- buyer_name: שם הקניין
+- buyer_name: שם הקניין – יש להחזיר בדיוק כפי שמופיע במסמך.
+  אם השם באנגלית, החזר באנגלית. אם בעברית, החזר בעברית. אל תתרגם.
 
 שורות הזמנה (line_items) – בדרך כלל מסומנות לפי "מספר שורה" (10, 20, 30...):
 - supplier_sku: מק"ט ספק
@@ -76,9 +82,13 @@ SYSTEM_PROMPT = """\
 כללים קריטיים לשדה revision (הוצאה):
 1. חפש את הסעיף "מסמכים הקשורים להזמנת הפריט" עבור כל שורה.
 2. מצא את המילה "הוצאה" בסעיף הזה.
-3. אם הערך שליד "הוצאה" הוא "-", החזר בדיוק: -
-4. אם הערך חסר לחלוטין או ריק, החזר בדיוק: לא צוין בבל"מ
-5. אם יש ערך כלשהו (למשל "ZEN", "00", "B"), החזר אותו כפי שהוא.
+3. חשוב מאוד: הטקסט בעברית הוא RTL (ימין לשמאל).
+   הערך של "הוצאה" הוא מה שמופיע *משמאל* למילה "הוצאה" בטקסט.
+   בדרך כלל זו אות בודדת באנגלית (A, B, C וכו') או "-".
+   אל תיקח בטעות את הערך שמימין ל"הוצאה" – זה שייך לשדה אחר.
+4. אם הערך שליד "הוצאה" הוא "-", החזר בדיוק: -
+5. אם אין ערך כלל (ריק או חסר), החזר בדיוק: לא מצוין בבל"מ
+6. אם יש ערך כלשהו (למשל "ZEN", "00", "B"), החזר אותו כפי שהוא.
 
 חשוב: החזר את כל הנתונים בפורמט המבוקש בלבד, ללא הסברים נוספים.\
 """
@@ -113,18 +123,22 @@ def export_to_csv(order: PurchaseOrder, output_path: str | Path) -> Path:
     """Flatten *order* into a CSV with one row per line-item."""
     rows = [
         {
-            "Balam Number": order.balam_number,
-            "Buyer Name": order.buyer_name,
-            "Supplier SKU": item.supplier_sku,
-            "Required Quantity": item.required_quantity,
-            "Revision": item.revision,
+            'מק"ט ספק': item.supplier_sku,
+            "כמות נדרשת": item.required_quantity,
+            "הוצאה": item.revision,
         }
         for item in order.line_items
     ]
 
     df = pd.DataFrame(rows)
     out = Path(output_path)
-    df.to_csv(out, index=False, encoding="utf-8-sig")
+
+    with open(out, "w", encoding="utf-8-sig", newline="") as f:
+        f.write(f'מספר בל"מ: {order.balam_number}\n')
+        f.write(f"קניין: {order.buyer_name}\n")
+        f.write("\n")
+        df.to_csv(f, index=False)
+
     return out
 
 
