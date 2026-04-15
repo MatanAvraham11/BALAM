@@ -151,7 +151,7 @@ if "authenticated" not in st.session_state:
 st.markdown(
     '<div class="logo-wrap">'
     "<h1>נתיב | Nativ</h1>"
-    '<p>מערכת לקליטת בל"מ</p>'
+    '<p>העלה בל"מ — נחלץ את הנתונים עבורך</p>'
     "</div>",
     unsafe_allow_html=True,
 )
@@ -175,24 +175,24 @@ if not st.session_state.authenticated:
 # Main area
 # ---------------------------------------------------------------------------
 
-st.markdown('העלה קובץ PDF של הזמנת רכש (בל"מ) וקבל קובץ CSV מפורסר.')
+st.markdown('העלה קובץ PDF של בל"מ וקבל בשניות את כל הנתונים הרלוונטיים מוכנים לשימוש.')
 
-uploaded = st.file_uploader("בחר קובץ PDF", type=["pdf"])
+uploaded = st.file_uploader('גרור לכאן קובץ בל"מ (PDF) או לחץ לבחירה', type=["pdf"])
 
 if uploaded is not None:
-    if st.button("המר ל-CSV", use_container_width=True, type="primary"):
+    if st.button("חלץ נתונים", use_container_width=True, type="primary"):
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(uploaded.getvalue())
             tmp_path = tmp.name
 
         try:
-            with st.spinner("מחלץ טקסט מה-PDF..."):
+            with st.spinner('קורא את הבל"מ...'):
                 text = extract_text_from_pdf(tmp_path)
 
-            with st.spinner("מעבד את ההזמנה..."):
+            with st.spinner("מחלץ נתונים..."):
                 order: PurchaseOrder = parse_with_openai(text)
 
-            st.success(f"עובד בהצלחה – {len(order.line_items)} שורות נמצאו")
+            st.success(f"הנתונים חולצו בהצלחה – נמצאו {len(order.line_items)} פריטים")
 
             st.markdown(
                 '<div class="info-card">'
@@ -219,7 +219,7 @@ if uploaded is not None:
             df = pd.DataFrame(rows)
 
             st.markdown(
-                '<div class="sec-title">תצוגה מקדימה</div>',
+                '<div class="sec-title">נתוני הפריטים</div>',
                 unsafe_allow_html=True,
             )
             st.dataframe(df, use_container_width=True, hide_index=True)
@@ -233,7 +233,7 @@ if uploaded is not None:
 
             csv_filename = uploaded.name.rsplit(".", 1)[0] + ".csv"
             st.download_button(
-                label="הורד CSV",
+                label="הורד קובץ נתונים",
                 data=csv_bytes,
                 file_name=csv_filename,
                 mime="text/csv",
