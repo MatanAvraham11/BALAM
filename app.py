@@ -217,8 +217,9 @@ with tab_balam:
                 with st.spinner("מחלץ נתונים..."):
                     order: PurchaseOrder = parse_balam_text(text)
 
+                _raw_count = len(order.line_items)
                 st.success(
-                    f"הנתונים חולצו בהצלחה – נמצאו {len(order.line_items)} פריטים"
+                    f"הנתונים חולצו בהצלחה – נמצאו {_raw_count} פריטים"
                 )
 
                 st.markdown(
@@ -244,6 +245,14 @@ with tab_balam:
                     for item in order.line_items
                 ]
                 df = pd.DataFrame(rows)
+
+                # Aggregate rows with same SKU + revision, then add row numbers
+                df = (
+                    df.groupby(['מק"ט ספק', "הוצאה"], as_index=False, sort=False)
+                    .agg({"כמות נדרשת": "sum"})
+                )
+                df.insert(0, "מספר", range(1, len(df) + 1))
+                df = df[["מספר", 'מק"ט ספק', "כמות נדרשת", "הוצאה"]]
 
                 st.markdown(
                     '<div class="sec-title">נתוני הפריטים</div>',
