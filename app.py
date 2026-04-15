@@ -136,10 +136,12 @@ st.markdown(
     /* Tabs RTL fix */
     .stTabs [data-baseweb="tab-list"] {
         direction: rtl;
-        gap: 0;
+        gap: 8px;
+        padding-bottom: 4px;
     }
     .stTabs [data-baseweb="tab"] {
         font-weight: 600;
+        padding: 8px 20px;
     }
     </style>
     """,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -276,7 +277,98 @@ class _TitleInfo(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 3. PDF annotation
+# 3. Text-span extraction (for accurate annotation placement)
+# ---------------------------------------------------------------------------
+
+def extract_text_spans(pdf_path: str | Path, page_num: int = 0) -> list[dict]:
+    """Return every text span on *page_num* with its exact PDF bounding box."""
+    doc = fitz.open(str(pdf_path))
+    page = doc[page_num]
+    spans: list[dict] = []
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                txt = span["text"].strip()
+                if txt:
+                    spans.append({
+                        "text": txt,
+                        "x0": span["bbox"][0],
+                        "y0": span["bbox"][1],
+                        "x1": span["bbox"][2],
+                        "y1": span["bbox"][3],
+                    })
+    doc.close()
+    return spans
+
+
+_NUM_RE = re.compile(r"[\d]+\.?[\d]*")
+
+
+def _extract_tokens(value: str) -> list[str]:
+    """Pull searchable tokens from a GPT dimension value string.
+
+    For ``"59.0 ±0.05"`` → ``["59.0", "0.05"]``
+    For ``"#6-32UNC-2A"`` → ``["6-32UNC-2A", "6", "32"]``
+    For ``"R0.50"``        → ``["0.50"]``
+    For ``"PASSIVATION PER AMS 2700"`` → ``["PASSIVATION", "2700"]``
+    """
+    cleaned = value.replace("⌀", "").replace("±", " ").replace("°", " ")
+    nums = _NUM_RE.findall(cleaned)
+    words = [w for w in re.split(r"[\s,;]+", cleaned) if len(w) >= 3]
+    seen: set[str] = set()
+    unique: list[str] = []
+    for t in nums + words:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+    return unique
+
+
+def find_span_for_value(
+    value: str,
+    spans: list[dict],
+    fallback_x_pct: float,
+    fallback_y_pct: float,
+    page_w: float,
+    page_h: float,
+) -> tuple[float, float]:
+    """Find the PDF text span that best matches *value* and return (cx, cy).
+
+    Uses the GPT approximate coordinate as a tiebreaker when multiple spans
+    contain the same token.  Falls back to the GPT coordinate when no
+    text-span match is found (e.g. scanned / image-only PDFs).
+    """
+    if not spans:
+        return fallback_x_pct * page_w, fallback_y_pct * page_h
+
+    tokens = _extract_tokens(value)
+    if not tokens:
+        return fallback_x_pct * page_w, fallback_y_pct * page_h
+
+    approx_x = fallback_x_pct * page_w
+    approx_y = fallback_y_pct * page_h
+
+    best_span = None
+    best_dist = float("inf")
+
+    for token in tokens:
+        for sp in spans:
+            if token in sp["text"]:
+                mid_x = (sp["x0"] + sp["x1"]) / 2
+                mid_y = (sp["y0"] + sp["y1"]) / 2
+                dist = (mid_x - approx_x) ** 2 + (mid_y - approx_y) ** 2
+                if dist < best_dist:
+                    best_dist = dist
+                    best_span = sp
+
+    if best_span is None:
+        return approx_x, approx_y
+
+    return best_span["x0"], (best_span["y0"] + best_span["y1"]) / 2
+
+
+# ---------------------------------------------------------------------------
+# 4. PDF annotation
 # ---------------------------------------------------------------------------
 
 _CIRCLE_RADIUS = 10
@@ -284,11 +376,14 @@ _FONT_SIZE = 7
 _LABEL_COLOR = (1, 0, 0)  # red
 _CIRCLE_FILL = (1, 1, 1)  # white fill for readability
 _CIRCLE_BORDER = (1, 0, 0)  # red border
+_CIRCLE_OFFSET = 2  # gap between circle edge and dimension text
 
 
 def annotate_pdf(pdf_path: str | Path, analysis: DrawingAnalysis) -> bytes:
-    """Draw numbered circles on the original PDF at each dimension location.
+    """Draw numbered circles on the original PDF next to each dimension.
 
+    Uses exact text-span bounding boxes from PyMuPDF for placement,
+    falling back to the GPT-estimated coordinates for scanned PDFs.
     Returns the annotated PDF as bytes.
     """
     doc = fitz.open(str(pdf_path))
@@ -300,9 +395,15 @@ def annotate_pdf(pdf_path: str | Path, analysis: DrawingAnalysis) -> bytes:
         rect = page.rect
         pw, ph = rect.width, rect.height
 
+        spans = extract_text_spans(pdf_path, page_num=page_idx)
+
         for dim in page_analysis.dimensions:
-            cx = dim.x_pct * pw
-            cy = dim.y_pct * ph
+            anchor_x, anchor_y = find_span_for_value(
+                dim.value, spans, dim.x_pct, dim.y_pct, pw, ph,
+            )
+
+            cx = anchor_x - _CIRCLE_RADIUS - _CIRCLE_OFFSET
+            cy = anchor_y
 
             cx = max(_CIRCLE_RADIUS, min(pw - _CIRCLE_RADIUS, cx))
             cy = max(_CIRCLE_RADIUS, min(ph - _CIRCLE_RADIUS, cy))
