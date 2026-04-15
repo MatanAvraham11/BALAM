@@ -77,19 +77,18 @@ if uploaded is not None:
             with st.spinner("שולח ל-OpenAI לפרסור..."):
                 order: PurchaseOrder = parse_with_openai(text)
 
-            st.success(
-                f'פורסר בהצלחה: בל"מ {order.balam_number}, '
-                f"קניין: {order.buyer_name}, "
-                f"{len(order.line_items)} שורות."
+            st.success(f"פורסר בהצלחה – {len(order.line_items)} שורות.")
+
+            st.markdown(
+                f'**מספר בל"מ:** {order.balam_number} &nbsp; | &nbsp; '
+                f"**קניין:** {order.buyer_name}"
             )
 
             rows = [
                 {
-                    "Balam Number": order.balam_number,
-                    "Buyer Name": order.buyer_name,
-                    "Supplier SKU": item.supplier_sku,
-                    "Required Quantity": item.required_quantity,
-                    "Revision": item.revision,
+                    'מק"ט ספק': item.supplier_sku,
+                    "כמות נדרשת": item.required_quantity,
+                    "הוצאה": item.revision,
                 }
                 for item in order.line_items
             ]
@@ -98,9 +97,12 @@ if uploaded is not None:
             st.subheader("תצוגה מקדימה")
             st.dataframe(df, use_container_width=True)
 
-            buf = io.BytesIO()
-            df.to_csv(buf, index=False, encoding="utf-8-sig")
-            csv_bytes = buf.getvalue()
+            buf = io.StringIO()
+            buf.write(f'מספר בל"מ: {order.balam_number}\n')
+            buf.write(f"קניין: {order.buyer_name}\n")
+            buf.write("\n")
+            df.to_csv(buf, index=False)
+            csv_bytes = buf.getvalue().encode("utf-8-sig")
 
             csv_filename = uploaded.name.rsplit(".", 1)[0] + ".csv"
             st.download_button(
