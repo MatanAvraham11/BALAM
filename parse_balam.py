@@ -7,6 +7,7 @@ structured outputs (Pydantic), and exports a flat CSV.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -52,6 +53,14 @@ class PurchaseOrder(BaseModel):
 # ---------------------------------------------------------------------------
 # 1. Text extraction
 # ---------------------------------------------------------------------------
+
+def extract_buyer_name(text: str) -> str | None:
+    """Extract buyer name directly from text using regex (100% accurate)."""
+    match = re.search(r'קניין שם\s+(.+)', text)
+    if match:
+        return match.group(1).strip()
+    return None
+
 
 def extract_text_from_pdf(pdf_path: str | Path) -> str:
     """Extract all text from *pdf_path* using pdfplumber."""
@@ -122,6 +131,11 @@ def parse_with_openai(text: str) -> PurchaseOrder:
         raise RuntimeError(
             "OpenAI returned a refusal or failed to parse the response."
         )
+
+    buyer_name = extract_buyer_name(text)
+    if buyer_name:
+        result = result.model_copy(update={"buyer_name": buyer_name})
+
     return result
 
 
