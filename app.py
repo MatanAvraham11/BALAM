@@ -14,7 +14,7 @@ import tempfile
 import pandas as pd
 import streamlit as st
 
-from parse_balam import PurchaseOrder, extract_text_from_pdf, parse_with_openai
+from parse_balam import PurchaseOrder, extract_text_from_pdf, parse_balam_text
 
 # ---------------------------------------------------------------------------
 # Backend config
@@ -215,7 +215,7 @@ with tab_balam:
                     text = extract_text_from_pdf(tmp_path)
 
                 with st.spinner("מחלץ נתונים..."):
-                    order: PurchaseOrder = parse_with_openai(text)
+                    order: PurchaseOrder = parse_balam_text(text)
 
                 st.success(
                     f"הנתונים חולצו בהצלחה – נמצאו {len(order.line_items)} פריטים"

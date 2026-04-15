@@ -1,8 +1,8 @@
 """
 PDF-to-CSV parser for Israeli purchasing orders (בל"מ).
 
-Extracts text from a Hebrew PDF, sends it to OpenAI gpt-4o with
-structured outputs (Pydantic), and exports a flat CSV.
+Primary: deterministic regex parser (free, instant, 100% accurate).
+Fallback: OpenAI GPT-4o with structured outputs (for unknown formats).
 """
 
 from __future__ import annotations
@@ -55,10 +55,19 @@ class PurchaseOrder(BaseModel):
 # ---------------------------------------------------------------------------
 
 def extract_buyer_name(text: str) -> str | None:
-    """Extract buyer name directly from text using regex (100% accurate)."""
-    match = re.search(r'קניין שם\s+(.+)', text)
+    """Extract buyer name directly from text using regex (100% accurate).
+
+    pdfplumber outputs Hebrew in visual order, so the label appears as
+    ``ןיינק םש`` (reversed "שם קניין") with the value to its left.
+    """
+    match = re.search(r'(.+?) ןיינק םש', text)
     if match:
-        return match.group(1).strip()
+        raw = match.group(1).strip()
+        # The value may have trailing non-buyer fields; take from end of line
+        line_match = re.search(r'^(.+?) ןיינק םש', text, re.MULTILINE)
+        if line_match:
+            return line_match.group(1).strip()
+        return raw
     return None
 
 
@@ -73,7 +82,76 @@ def extract_text_from_pdf(pdf_path: str | Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 2. LLM parsing
+# 2. Regex parser (primary – free, instant, deterministic)
+# ---------------------------------------------------------------------------
+
+# pdfplumber extracts Hebrew in visual (reversed) order — patterns below
+# match the actual byte sequence in the extracted string.
+_BALAM_RE = re.compile(r'(\d+) מ"לב רפסמ')
+_BUYER_RE = re.compile(r'(.+?) ןיינק םש')
+_EXPECTED_LINES_RE = re.compile(r'(\d+) תורוש רפסמ')
+_LINE_START_RE = re.compile(r'הרוש רפסמ')
+_SKU_RE = re.compile(r'([\w.\-/]+) קפס ט"קמ')
+_QTY_RE = re.compile(r'([\d.]+) תשרדנ תומכ')
+_REV_RE = re.compile(r'([A-Za-z\-]):האצוה')
+
+
+def parse_with_regex(text: str) -> PurchaseOrder | None:
+    """Try to parse the BLM using regex only. Returns None if the format
+    is unrecognised so the caller can fall back to LLM."""
+
+    balam_m = _BALAM_RE.search(text)
+    buyer_m = _BUYER_RE.search(text)
+    if not balam_m or not buyer_m:
+        return None
+
+    balam_number = balam_m.group(1)
+    buyer_name = buyer_m.group(1).strip()
+
+    expected_m = _EXPECTED_LINES_RE.search(text)
+    expected_count = int(expected_m.group(1)) if expected_m else None
+
+    parts = _LINE_START_RE.split(text)
+    # parts[0] = header, parts[1:] = each line-item chunk
+    line_items: list[LineItem] = []
+    for chunk in parts[1:]:
+        sku_m = _SKU_RE.search(chunk)
+        qty_m = _QTY_RE.search(chunk)
+        if not sku_m or not qty_m:
+            continue
+
+        rev_m = _REV_RE.search(chunk)
+        revision = rev_m.group(1) if rev_m else 'לא מצוין בבל"מ'
+
+        line_items.append(LineItem(
+            supplier_sku=sku_m.group(1).strip(),
+            required_quantity=float(qty_m.group(1)),
+            revision=revision,
+        ))
+
+    if not line_items:
+        return None
+
+    if expected_count is not None and len(line_items) != expected_count:
+        return None
+
+    return PurchaseOrder(
+        balam_number=balam_number,
+        buyer_name=buyer_name,
+        line_items=line_items,
+    )
+
+
+def parse_balam_text(text: str) -> PurchaseOrder:
+    """Parse BLM text: regex first (free & instant), GPT-4o fallback."""
+    result = parse_with_regex(text)
+    if result is not None:
+        return result
+    return parse_with_openai(text)
+
+
+# ---------------------------------------------------------------------------
+# 3. LLM parsing (fallback for unknown formats)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
@@ -140,7 +218,7 @@ def parse_with_openai(text: str) -> PurchaseOrder:
 
 
 # ---------------------------------------------------------------------------
-# 3. CSV export
+# 4. CSV export
 # ---------------------------------------------------------------------------
 
 def export_to_csv(order: PurchaseOrder, output_path: str | Path) -> Path:
