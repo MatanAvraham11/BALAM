@@ -3,3 +3,5 @@ openai
 pandas
 pydantic
 streamlit
+PyMuPDF
+Pillow
