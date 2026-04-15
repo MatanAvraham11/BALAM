@@ -17,10 +17,10 @@ import streamlit as st
 from parse_balam import PurchaseOrder, extract_text_from_pdf, parse_with_openai
 
 # ---------------------------------------------------------------------------
-# Backend config – API key is set here so end-users never see it
+# Backend config – secrets are loaded from Streamlit Secrets (never hard-coded)
 # ---------------------------------------------------------------------------
 
-os.environ["OPENAI_API_KEY"] = "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"
+os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -48,7 +48,7 @@ if not st.session_state.authenticated:
     st.title("כניסה למערכת")
     password = st.text_input("סיסמה", type="password")
     if st.button("כניסה", use_container_width=True):
-        if password == "NETA102030":
+        if password == st.secrets["APP_PASSWORD"]:
             st.session_state.authenticated = True
             st.rerun()
         else:
