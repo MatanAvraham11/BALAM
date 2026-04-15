@@ -33,200 +33,136 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Session state defaults
+# Minimal custom CSS
+# ---------------------------------------------------------------------------
+
+st.markdown(
+    """
+    <style>
+    /* Hide Streamlit chrome */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    /* RTL */
+    body, .stApp {
+        direction: rtl;
+        text-align: right;
+    }
+
+    /* Logo */
+    .logo-wrap {
+        text-align: center;
+        padding: 2rem 0 0.8rem 0;
+    }
+    .logo-wrap h1 {
+        font-size: 2.6rem;
+        font-weight: 800;
+        color: #2563eb;
+        margin: 0;
+        letter-spacing: -0.5px;
+    }
+    .logo-wrap p {
+        font-size: 0.95rem;
+        color: #64748b;
+        margin: 0.3rem 0 0 0;
+    }
+
+    /* Divider */
+    .sep {
+        border: none;
+        border-top: 1px solid #e2e8f0;
+        margin: 1rem 0 1.5rem 0;
+    }
+
+    /* Info card */
+    .info-card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 1.2rem 1.5rem;
+        margin: 1rem 0 1.5rem 0;
+        display: flex;
+        justify-content: center;
+        gap: 3rem;
+        flex-wrap: wrap;
+    }
+    .info-card .item .lbl {
+        font-size: 0.78rem;
+        color: #64748b;
+        margin-bottom: 2px;
+    }
+    .info-card .item .val {
+        font-size: 1.15rem;
+        font-weight: 700;
+        color: #1a1a2e;
+    }
+
+    /* Download button */
+    .stDownloadButton > button {
+        background-color: #2563eb !important;
+        color: #ffffff !important;
+        border: none !important;
+        border-radius: 10px !important;
+        font-weight: 600 !important;
+        font-size: 1rem !important;
+        padding: 0.65rem 1.5rem !important;
+    }
+    .stDownloadButton > button:hover {
+        background-color: #1d4ed8 !important;
+    }
+
+    /* Convert button */
+    .stButton > button {
+        border-radius: 10px;
+        font-weight: 600;
+    }
+
+    /* File uploader */
+    [data-testid="stFileUploader"] {
+        border: 2px dashed #cbd5e1;
+        border-radius: 12px;
+        padding: 0.8rem;
+    }
+
+    /* Section title */
+    .sec-title {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #1a1a2e;
+        margin: 1.5rem 0 0.5rem 0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ---------------------------------------------------------------------------
+# Session state
 # ---------------------------------------------------------------------------
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
-if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = False
 
 # ---------------------------------------------------------------------------
-# Theme CSS
-# ---------------------------------------------------------------------------
-
-LIGHT_THEME = """
-:root {
-    --bg: #f8f9fb;
-    --card-bg: #ffffff;
-    --text: #1a1a2e;
-    --text-secondary: #555;
-    --accent: #2563eb;
-    --accent-hover: #1d4ed8;
-    --border: #e2e8f0;
-    --success-bg: #ecfdf5;
-    --success-border: #6ee7b7;
-}
-"""
-
-DARK_THEME = """
-:root {
-    --bg: #0f172a;
-    --card-bg: #1e293b;
-    --text: #e2e8f0;
-    --text-secondary: #94a3b8;
-    --accent: #3b82f6;
-    --accent-hover: #60a5fa;
-    --border: #334155;
-    --success-bg: #064e3b;
-    --success-border: #34d399;
-}
-"""
-
-BASE_CSS = """
-<style>
-{theme}
-
-#MainMenu {{visibility: hidden;}}
-footer {{visibility: hidden;}}
-header {{visibility: hidden;}}
-
-body, .stApp {{
-    direction: rtl;
-    text-align: right;
-}}
-
-.stApp {{
-    background-color: var(--bg);
-}}
-
-.logo-container {{
-    text-align: center;
-    padding: 1.5rem 0 0.5rem 0;
-}}
-
-.logo-title {{
-    font-size: 2.4rem;
-    font-weight: 800;
-    color: var(--accent);
-    letter-spacing: -0.5px;
-    margin-bottom: 0;
-    line-height: 1.2;
-}}
-
-.logo-subtitle {{
-    font-size: 1rem;
-    color: var(--text-secondary);
-    margin-top: 0.2rem;
-}}
-
-.theme-toggle {{
-    position: fixed;
-    top: 14px;
-    left: 14px;
-    z-index: 9999;
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 50%;
-    width: 40px;
-    height: 40px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-}}
-
-div[data-testid="stVerticalBlock"] > div {{
-    color: var(--text);
-}}
-
-.info-card {{
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 1.2rem 1.5rem;
-    margin: 1rem 0;
-}}
-
-.info-card .label {{
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    margin-bottom: 0.15rem;
-}}
-
-.info-card .value {{
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: var(--text);
-}}
-
-.divider {{
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 1.2rem 0;
-}}
-
-.stButton > button {{
-    border-radius: 10px;
-    font-weight: 600;
-    padding: 0.6rem 1.5rem;
-    transition: all 0.2s;
-}}
-
-.stDownloadButton > button {{
-    background-color: var(--accent) !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 10px !important;
-    font-weight: 600 !important;
-}}
-
-.stDownloadButton > button:hover {{
-    background-color: var(--accent-hover) !important;
-}}
-
-[data-testid="stFileUploader"] {{
-    background: var(--card-bg);
-    border: 2px dashed var(--border);
-    border-radius: 12px;
-    padding: 1rem;
-}}
-
-.section-header {{
-    font-size: 1.1rem;
-    font-weight: 700;
-    color: var(--text);
-    margin: 1.5rem 0 0.5rem 0;
-}}
-</style>
-"""
-
-theme_css = DARK_THEME if st.session_state.dark_mode else LIGHT_THEME
-st.markdown(BASE_CSS.format(theme=theme_css), unsafe_allow_html=True)
-
-# ---------------------------------------------------------------------------
-# Dark mode toggle
-# ---------------------------------------------------------------------------
-
-col_spacer, col_toggle = st.columns([8, 1])
-with col_toggle:
-    icon = "☀️" if st.session_state.dark_mode else "🌙"
-    if st.button(icon, key="theme_toggle", help="החלף מצב תצוגה"):
-        st.session_state.dark_mode = not st.session_state.dark_mode
-        st.rerun()
-
-# ---------------------------------------------------------------------------
-# Logo & Header
+# Logo
 # ---------------------------------------------------------------------------
 
 st.markdown(
-    '<div class="logo-container">'
-    '<div class="logo-title">נתיב | Nativ</div>'
-    '<div class="logo-subtitle">מערכת לקליטת בל"מ</div>'
+    '<div class="logo-wrap">'
+    "<h1>נתיב | Nativ</h1>"
+    '<p>מערכת לקליטת בל"מ</p>'
     "</div>",
     unsafe_allow_html=True,
 )
-
-st.markdown('<hr class="divider">', unsafe_allow_html=True)
+st.markdown('<hr class="sep">', unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Password gate
 # ---------------------------------------------------------------------------
 
 if not st.session_state.authenticated:
-    st.markdown("")
-    password = st.text_input("סיסמה", type="password", placeholder="הזן סיסמה...")
+    password = st.text_input("סיסמה", type="password")
     if st.button("כניסה", use_container_width=True):
         if password == st.secrets["APP_PASSWORD"]:
             st.session_state.authenticated = True
@@ -239,17 +175,12 @@ if not st.session_state.authenticated:
 # Main area
 # ---------------------------------------------------------------------------
 
-st.markdown(
-    'העלה קובץ PDF של הזמנת רכש (בל"מ) וקבל קובץ CSV מפורסר.',
-)
+st.markdown('העלה קובץ PDF של הזמנת רכש (בל"מ) וקבל קובץ CSV מפורסר.')
 
-st.markdown("")
-
-uploaded = st.file_uploader("בחר קובץ PDF", type=["pdf"], label_visibility="collapsed")
+uploaded = st.file_uploader("בחר קובץ PDF", type=["pdf"])
 
 if uploaded is not None:
-    st.markdown("")
-    if st.button("⚡ המר ל-CSV", use_container_width=True):
+    if st.button("המר ל-CSV", use_container_width=True, type="primary"):
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(uploaded.getvalue())
             tmp_path = tmp.name
@@ -265,10 +196,15 @@ if uploaded is not None:
 
             st.markdown(
                 '<div class="info-card">'
-                f'<div style="display:flex; gap:3rem; justify-content:center; flex-wrap:wrap;">'
-                f'<div><div class="label">מספר בל"מ</div><div class="value">{order.balam_number}</div></div>'
-                f'<div><div class="label">קניין</div><div class="value">{order.buyer_name}</div></div>'
-                f"</div></div>",
+                '<div class="item">'
+                f'<div class="lbl">מספר בל"מ</div>'
+                f'<div class="val">{order.balam_number}</div>'
+                "</div>"
+                '<div class="item">'
+                f'<div class="lbl">קניין</div>'
+                f'<div class="val">{order.buyer_name}</div>'
+                "</div>"
+                "</div>",
                 unsafe_allow_html=True,
             )
 
@@ -282,7 +218,10 @@ if uploaded is not None:
             ]
             df = pd.DataFrame(rows)
 
-            st.markdown('<div class="section-header">תצוגה מקדימה</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="sec-title">תצוגה מקדימה</div>',
+                unsafe_allow_html=True,
+            )
             st.dataframe(df, use_container_width=True, hide_index=True)
 
             buf = io.StringIO()
@@ -293,10 +232,8 @@ if uploaded is not None:
             csv_bytes = buf.getvalue().encode("utf-8-sig")
 
             csv_filename = uploaded.name.rsplit(".", 1)[0] + ".csv"
-
-            st.markdown("")
             st.download_button(
-                label="📥 הורד CSV",
+                label="הורד CSV",
                 data=csv_bytes,
                 file_name=csv_filename,
                 mime="text/csv",
