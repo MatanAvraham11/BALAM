@@ -118,65 +118,30 @@ st.markdown(
         font-weight: 600;
     }
 
-    /* File uploader */
+    /* File uploader — border wraps label + dropzone together */
     [data-testid="stFileUploader"] {
-        width: 100%;
-    }
-    [data-testid="stFileUploader"] section {
         border: 2px dashed #cbd5e1;
         border-radius: 12px;
-        padding: 0;
-        min-height: 168px;
+        padding: 1.5rem 1.2rem;
+    }
+    [data-testid="stFileUploader"] label {
+        text-align: center;
+        display: block;
+        font-size: 1rem;
+        font-weight: 500;
+        color: #1a1a2e;
+        margin-bottom: 0.6rem;
     }
     [data-testid="stFileUploaderDropzone"] {
-        min-height: 168px;
-        padding: 1.25rem 1rem;
-        width: 100%;
-        box-sizing: border-box;
-        display: flex;
-        flex-direction: column;
-        gap: 0.45rem;
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-    }
-    [data-testid="stFileUploaderDropzone"] > div {
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 0.35rem;
-        width: 100%;
-        text-align: center;
-    }
-    [data-testid="stFileUploaderDropzone"] button {
-        display: block;
-        margin: 0 auto;
+        gap: 0.4rem;
+        padding: 0;
     }
     [data-testid="stFileUploaderDropzone"] small {
-        display: block;
-        margin: 0 auto;
-        text-align: center;
-    }
-    [data-testid="stFileUploader"]:first-of-type [data-testid="stFileUploaderDropzone"]::before {
-        content: 'גרור לכאן קובץ בל"מ (PDF) או לחץ לבחירה';
-        color: #1a1a2e;
-        font-size: 1rem;
-        font-weight: 500;
-        line-height: 1.5;
-        max-width: 90%;
-        display: block;
-        margin-bottom: 0.15rem;
-    }
-    [data-testid="stFileUploader"]:last-of-type [data-testid="stFileUploaderDropzone"]::before {
-        content: 'גרור לכאן שרטוט הנדסי (PDF) או לחץ לבחירה';
-        color: #1a1a2e;
-        font-size: 1rem;
-        font-weight: 500;
-        line-height: 1.5;
-        max-width: 90%;
-        display: block;
-        margin-bottom: 0.15rem;
+        margin-top: 0.3rem;
     }
 
     /* Section title */
@@ -254,7 +219,6 @@ with tab_balam:
         'גרור לכאן קובץ בל"מ (PDF) או לחץ לבחירה',
         type=["pdf"],
         key="balam_uploader",
-        label_visibility="collapsed",
     )
 
     if uploaded_balam is not None:
@@ -358,7 +322,6 @@ with tab_drawing:
         "גרור לכאן שרטוט הנדסי (PDF) או לחץ לבחירה",
         type=["pdf"],
         key="drawing_uploader",
-        label_visibility="collapsed",
     )
 
     if uploaded_drawing is not None:
