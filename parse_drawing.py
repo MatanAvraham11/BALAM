@@ -1,11 +1,16 @@
 """
-Engineering-drawing dimension extractor (V.1.3 pipeline).
+Engineering-drawing dimension extractor (clean CAD PDFs).
 
-Hybrid flow:
-1. Classify each page: vector text vs scan vs stamped (user hint).
-2. Build dimension *candidates* with exact PDF or vision-normalized bboxes.
+Pipeline:
+1. Classify each page internally: vector text vs scan (no user-facing modes).
+2. Build dimension candidates from PyMuPDF lines (title block excluded) and
+   optionally merge GPT-4o Vision candidates (IoU dedupe) when vector yield is low.
 3. Thin text LLM: order + type + merge candidate ids into final rows.
-4. Annotate PDF from stored bboxes (fallback: legacy span match).
+4. Annotate PDF using label placement that avoids overlapping dimension text bboxes.
+
+Offline calibration (optional): compare paired PDFs (clean vs hand-stamped) to
+measure (dx, dy) from dimension text to human balloon centers, then tune
+placement direction order / margins in place_label_circle_center.
 """
 
 from __future__ import annotations
@@ -15,7 +20,6 @@ import io
 import json
 import re
 from pathlib import Path
-from typing import Literal
 
 import fitz  # PyMuPDF
 from openai import OpenAI
@@ -56,8 +60,11 @@ DIMENSION_TYPES: list[str] = [
     "הערה (Note)",
 ]
 
-DrawingUserRoute = Literal["auto", "vector", "scan", "stamped"]
-DrawingRoute = Literal["vector", "scan", "stamped_hint"]
+# Title block exclusion (bottom-right), as fraction of page width/height.
+_TITLE_BLOCK_X0_FRAC = 0.62
+_TITLE_BLOCK_Y0_FRAC = 0.74
+_MERGE_VISION_IF_VECTOR_FEWER_THAN = 14
+_VISION_IOU_DEDUPE_THRESHOLD = 0.38
 
 
 class DimensionItem(BaseModel):
@@ -97,7 +104,7 @@ class DrawingAnalysis(BaseModel):
     pages: list[DrawingPage] = Field(description="ניתוח לכל עמוד בשרטוט")
     page_routes: list[str] = Field(
         default_factory=list,
-        description="Per-page extraction route (vector/scan/stamped_hint)",
+        description="Internal per-page route tag (debug): vector_only, vector+vision, scan, scan_fallback",
     )
 
 
@@ -169,6 +176,7 @@ _NOTE_HINT = re.compile(
 
 
 def _line_looks_dimension_like(text: str) -> bool:
+    """High-precision filter: avoid title-block noise from 'any line with a digit'."""
     t = text.strip()
     if len(t) < 1:
         return False
@@ -176,27 +184,26 @@ def _line_looks_dimension_like(text: str) -> bool:
         return True
     if _DIM_LINE_HINT.search(t):
         return True
-    if len(t) >= 4 and re.search(r"\d", t) and len(t) <= 120:
-        return True
+    if len(t) <= 22 and re.search(r"\d", t):
+        if re.search(r"[⌀Øø°±\d\.\#RMABCXYZ]", t, re.I):
+            return True
     return False
+
+
+def _bbox_center_in_title_block(
+    x0: float, y0: float, x1: float, y1: float, pw: float, ph: float
+) -> bool:
+    cx = (x0 + x1) / 2
+    cy = (y0 + y1) / 2
+    return cx >= pw * _TITLE_BLOCK_X0_FRAC and cy >= ph * _TITLE_BLOCK_Y0_FRAC
 
 
 def _block_area(bbox: tuple[float, float, float, float]) -> float:
     return max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
 
 
-def classify_page_route(
-    page: fitz.Page,
-    user_route: DrawingUserRoute,
-) -> DrawingRoute:
-    """Pick extraction strategy for one page."""
-    if user_route == "vector":
-        return "vector"
-    if user_route == "scan":
-        return "scan"
-    if user_route == "stamped":
-        return "stamped_hint"
-    # auto
+def classify_page_route(page: fitz.Page) -> str:
+    """Return 'vector' or 'scan' for internal candidate extraction."""
     d = page.get_text("dict")
     blocks = d.get("blocks", [])
     text = page.get_text("text") or ""
@@ -236,6 +243,28 @@ def classify_page_route(
     if text_len >= 100 and dim_like >= 1:
         return "vector"
     return "scan"
+
+
+def page_text_and_image_ratio(page: fitz.Page) -> tuple[int, float]:
+    """Strip length and approximate image area ratio for merge heuristics."""
+    d = page.get_text("dict")
+    text = (page.get_text("text") or "").strip()
+    img_area = 0.0
+    text_area = 0.0
+    for block in d.get("blocks", []):
+        if block.get("type") == 1:
+            bb = block.get("bbox")
+            if bb:
+                img_area += _block_area(bb)
+        elif block.get("type") == 0:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    bb = span.get("bbox")
+                    if bb:
+                        text_area += _block_area(bb)
+    total = img_area + text_area
+    ratio = img_area / total if total > 0 else 0.0
+    return len(text), ratio
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +307,7 @@ def extract_dimension_candidates_vector(
 ) -> list[DrawingCandidate]:
     doc = fitz.open(str(pdf_path))
     page = doc[page_index]
+    pw, ph = page.rect.width, page.rect.height
     out: list[DrawingCandidate] = []
     cid = start_id
     for block in page.get_text("dict").get("blocks", []):
@@ -301,6 +331,8 @@ def extract_dimension_candidates_vector(
                 x1 = max(x1, b[2])
                 y1 = max(y1, b[3])
             if x0 == float("inf"):
+                continue
+            if _bbox_center_in_title_block(x0, y0, x1, y1, pw, ph):
                 continue
             line_text = " ".join(texts).strip()
             if not line_text or not _line_looks_dimension_like(line_text):
@@ -347,6 +379,70 @@ def _vision_candidates_to_drawing_candidates(
     return out
 
 
+def _iou_box(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    iw, ih = max(0.0, ix1 - ix0), max(0.0, iy1 - iy0)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    aa = max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0)
+    bb = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
+    union = aa + bb - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _renumber_candidates(
+    cands: list[DrawingCandidate], page_index: int
+) -> list[DrawingCandidate]:
+    return [
+        DrawingCandidate(
+            candidate_id=i,
+            page_index=page_index,
+            text=c.text,
+            x0=c.x0,
+            y0=c.y0,
+            x1=c.x1,
+            y1=c.y1,
+        )
+        for i, c in enumerate(cands, start=1)
+    ]
+
+
+def merge_vector_and_vision_candidates(
+    primary: list[DrawingCandidate],
+    secondary: list[DrawingCandidate],
+    page_index: int,
+    iou_threshold: float = _VISION_IOU_DEDUPE_THRESHOLD,
+) -> list[DrawingCandidate]:
+    """Keep all primary candidates; add vision boxes that do not overlap strongly."""
+    merged: list[DrawingCandidate] = list(primary)
+    for c in secondary:
+        box = (c.x0, c.y0, c.x1, c.y1)
+        if any(
+            _iou_box(box, (m.x0, m.y0, m.x1, m.y1)) >= iou_threshold
+            for m in merged
+        ):
+            continue
+        merged.append(
+            DrawingCandidate(
+                candidate_id=0,
+                page_index=page_index,
+                text=c.text.strip(),
+                x0=c.x0,
+                y0=c.y0,
+                x1=c.x1,
+                y1=c.y1,
+            )
+        )
+    return _renumber_candidates(merged, page_index)
+
+
 VISION_CANDIDATES_PROMPT = """\
 You extract **candidate regions** from an engineering drawing page image.
 Each candidate is one piece of text: a dimension value, tolerance, GD&T callout, \
@@ -358,11 +454,10 @@ thread spec, or one NOTES bullet line.
 - Bounding box in **normalized page coordinates** (0.0–1.0): \
 x0_pct,y0_pct is top-left of the text box, x1_pct,y1_pct is bottom-right.
 - Include NOTES section lines as separate candidates (usually top-left).
-- Do **NOT** list small manual circled reference numbers that people draw in red \
-to mark dimensions (balloons). Only real dimension/note text from the print.
 - Merge split dimension text on the same line into **one** candidate when they \
 clearly belong together (e.g. "59.0" and "±0.05" adjacent).
-- Be thorough: include every visible dimension and note line worth tabulating.
+- Be exhaustive: include every visible dimension value, note line, GD&T frame, \
+and thread callout worth tabulating.
 
 Do **not** assign final dimension numbering — only spatial candidates.
 """
@@ -371,20 +466,13 @@ Do **not** assign final dimension numbering — only spatial candidates.
 def extract_candidates_via_vision(
     img_bytes: bytes,
     page_index: int,
-    stamped: bool,
 ) -> VisionCandidatePage:
     client = OpenAI()
-    extra = (
-        " This drawing may include hand-drawn red circles and handwritten numbers; "
-        "ignore those for candidate text — extract underlying print dimensions/notes."
-        if stamped
-        else ""
-    )
     user_content: list[dict] = [
         {
             "type": "text",
             "text": (
-                f"Page index (for context only): {page_index}.{extra} "
+                f"Page index (for context only): {page_index}. "
                 "List all dimension/note text candidates with bounding boxes."
             ),
         },
@@ -434,9 +522,16 @@ you may merge adjacent candidate lines that are one logical dimension.
 - Every output row must reference at least one candidate_id from the input.
 - If one logical dimension was split into two candidates, use both ids.
 
+## COVERAGE (critical)
+- Every candidate_id in the input must appear in **exactly one** output row's \
+source_candidate_ids (merge duplicates only when two candidates are clearly \
+the same text in the same place).
+- Do **not** drop candidates because they look like "decorative" sheet text \
+unless they are clearly a title, company logo string, or scale bar label only.
+- If unsure between duplicate and distinct, prefer keeping both rows.
+
 ## Constraints
 - Do not invent candidate_ids.
-- Skip decorative sheet text that is not a dimension or engineering note.
 - For ambiguous type, pick the closest from the list.
 """
 
@@ -559,11 +654,8 @@ def _fetch_title_block(pdf_path: str | Path) -> _TitleInfo:
     return title_info
 
 
-def analyze_full_drawing(
-    pdf_path: str | Path,
-    user_route: DrawingUserRoute = "auto",
-) -> DrawingAnalysis:
-    """Run V.1.3 hybrid pipeline on all pages."""
+def analyze_full_drawing(pdf_path: str | Path) -> DrawingAnalysis:
+    """Hybrid pipeline: vector candidates, optional vision merge, thin LLM, bbox output."""
     pdf_path = Path(pdf_path)
     doc = fitz.open(str(pdf_path))
     num_pages = len(doc)
@@ -574,32 +666,42 @@ def analyze_full_drawing(
     for page_idx in range(num_pages):
         page = doc[page_idx]
         pw, ph = page.rect.width, page.rect.height
-        route = classify_page_route(page, user_route)
-        stamped = route == "stamped_hint"
-        route_used = route
+        route = classify_page_route(page)
+        text_len, image_ratio = page_text_and_image_ratio(page)
 
-        candidates: list[DrawingCandidate] = []
-        if route == "vector":
-            candidates = extract_dimension_candidates_vector(
-                pdf_path, page_idx, start_id=1
-            )
-            if not candidates:
-                route = "scan"  # fallback
-                route_used = "scan_fallback"
-        if route in ("scan", "stamped_hint"):
+        vec = extract_dimension_candidates_vector(pdf_path, page_idx, start_id=1)
+        candidates: list[DrawingCandidate]
+        route_used: str
+
+        if route == "scan" or not vec:
             img_bytes = pdf_page_to_image(pdf_path, page_num=page_idx, dpi=200)
-            vpage = extract_candidates_via_vision(
-                img_bytes, page_idx, stamped=stamped
+            vpage = extract_candidates_via_vision(img_bytes, page_idx)
+            raw = _vision_candidates_to_drawing_candidates(vpage, page_idx, pw, ph)
+            candidates = _renumber_candidates(raw, page_idx)
+            route_used = "scan" if route == "scan" else "scan_fallback"
+        else:
+            need_vision_merge = (
+                len(vec) < _MERGE_VISION_IF_VECTOR_FEWER_THAN
+                or (text_len < 220 and image_ratio > 0.11)
             )
-            candidates = _vision_candidates_to_drawing_candidates(
-                vpage, page_idx, pw, ph
-            )
+            if need_vision_merge:
+                img_bytes = pdf_page_to_image(pdf_path, page_num=page_idx, dpi=200)
+                vpage = extract_candidates_via_vision(img_bytes, page_idx)
+                vis = _vision_candidates_to_drawing_candidates(
+                    vpage, page_idx, pw, ph
+                )
+                candidates = merge_vector_and_vision_candidates(
+                    vec, vis, page_idx
+                )
+                route_used = "vector+vision"
+            else:
+                candidates = _renumber_candidates(vec, page_idx)
+                route_used = "vector_only"
 
         classified = order_and_classify_candidates(
             page_idx, candidates, pw, ph
         )
         dims = _build_dimension_items(classified, candidates, pw, ph)
-        # Renumber globally
         for d in dims:
             d.number = seq
             seq += 1
@@ -697,11 +799,81 @@ _FONT_SIZE = 7
 _LABEL_COLOR = (1, 0, 0)
 _CIRCLE_FILL = (1, 1, 1)
 _CIRCLE_BORDER = (1, 0, 0)
-_CIRCLE_OFFSET = 2
+_LABEL_MARGIN = 4.0
+
+
+def _rects_overlap(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> bool:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    return not (ax1 < bx0 or bx1 < ax0 or ay1 < by0 or by1 < ay0)
+
+
+def _intersection_area(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    return max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+
+
+def place_label_circle_center(
+    text_bbox: tuple[float, float, float, float],
+    pw: float,
+    ph: float,
+    circle_radius: float,
+    margin: float,
+) -> tuple[float, float]:
+    """Pick circle center so the circle (plus small padding) does not cover dimension text."""
+    x0, y0, x1, y1 = text_bbox
+    midx = (x0 + x1) / 2
+    midy = (y0 + y1) / 2
+    r = circle_radius
+    m = margin
+    pad = 2.5
+    eff = r + pad
+    tb = (x0 - 0.5, y0 - 0.5, x1 + 0.5, y1 + 0.5)
+
+    def circle_bbox(cx: float, cy: float) -> tuple[float, float, float, float]:
+        cx = max(r, min(pw - r, cx))
+        cy = max(r, min(ph - r, cy))
+        return (cx - eff, cy - eff, cx + eff, cy + eff)
+
+    trials = [
+        (x0 - m - r, midy),
+        (midx, y0 - m - r),
+        (midx, y1 + m + r),
+        (x1 + m + r, midy),
+        (x0 - m - r, y0 - m - r),
+        (x1 + m + r, y0 - m - r),
+        (x0 - m - r, y1 + m + r),
+        (x1 + m + r, y1 + m + r),
+    ]
+
+    best: tuple[float, float] | None = None
+    best_score = float("inf")
+    for tcx, tcy in trials:
+        cx = max(r, min(pw - r, tcx))
+        cy = max(r, min(ph - r, tcy))
+        cb = circle_bbox(cx, cy)
+        if not _rects_overlap(cb, tb):
+            return cx, cy
+        inter = _intersection_area(cb, tb)
+        dist = (cx - midx) ** 2 + (cy - midy) ** 2
+        score = inter * 500.0 + dist
+        if score < best_score:
+            best_score = score
+            best = (cx, cy)
+    return best if best is not None else (max(r, x0 - m - r), max(r, midy))
 
 
 def annotate_pdf(pdf_path: str | Path, analysis: DrawingAnalysis) -> bytes:
-    """Draw numbered circles; prefer stored PDF bboxes from the pipeline."""
+    """Draw numbered circles beside dimension text without obscuring the value bbox."""
     doc = fitz.open(str(pdf_path))
 
     for page_idx, page_analysis in enumerate(analysis.pages):
@@ -719,10 +891,9 @@ def annotate_pdf(pdf_path: str | Path, analysis: DrawingAnalysis) -> bytes:
                 and dim.bbox_x1 is not None
                 and dim.bbox_y1 is not None
             ):
-                anchor_x = dim.bbox_x0
-                anchor_y = (dim.bbox_y0 + dim.bbox_y1) / 2
+                tb = (dim.bbox_x0, dim.bbox_y0, dim.bbox_x1, dim.bbox_y1)
             else:
-                anchor_x, anchor_y = find_span_for_value(
+                ax, ay = find_span_for_value(
                     dim.value,
                     spans,
                     dim.x_pct,
@@ -730,11 +901,11 @@ def annotate_pdf(pdf_path: str | Path, analysis: DrawingAnalysis) -> bytes:
                     pw,
                     ph,
                 )
+                tb = (ax, ay - 4, ax + 2, ay + 4)
 
-            cx = anchor_x - _CIRCLE_RADIUS - _CIRCLE_OFFSET
-            cy = anchor_y
-            cx = max(_CIRCLE_RADIUS, min(pw - _CIRCLE_RADIUS, cx))
-            cy = max(_CIRCLE_RADIUS, min(ph - _CIRCLE_RADIUS, cy))
+            cx, cy = place_label_circle_center(
+                tb, pw, ph, _CIRCLE_RADIUS, _LABEL_MARGIN
+            )
 
             shape = page.new_shape()
             shape.draw_circle(fitz.Point(cx, cy), _CIRCLE_RADIUS)
