@@ -135,9 +135,27 @@ st.markdown(
         box-sizing: border-box;
         display: flex;
         flex-direction: column;
-        gap: 0.75rem;
+        gap: 0.45rem;
         align-items: center;
         justify-content: center;
+        text-align: center;
+    }
+    [data-testid="stFileUploaderDropzone"] > div {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.35rem;
+        width: 100%;
+        text-align: center;
+    }
+    [data-testid="stFileUploaderDropzone"] button {
+        display: block;
+        margin: 0 auto;
+    }
+    [data-testid="stFileUploaderDropzone"] small {
+        display: block;
+        margin: 0 auto;
         text-align: center;
     }
     [data-testid="stFileUploader"]:first-of-type [data-testid="stFileUploaderDropzone"]::before {
@@ -147,6 +165,8 @@ st.markdown(
         font-weight: 500;
         line-height: 1.5;
         max-width: 90%;
+        display: block;
+        margin-bottom: 0.15rem;
     }
     [data-testid="stFileUploader"]:last-of-type [data-testid="stFileUploaderDropzone"]::before {
         content: 'גרור לכאן שרטוט הנדסי (PDF) או לחץ לבחירה';
@@ -155,6 +175,8 @@ st.markdown(
         font-weight: 500;
         line-height: 1.5;
         max-width: 90%;
+        display: block;
+        margin-bottom: 0.15rem;
     }
 
     /* Section title */
