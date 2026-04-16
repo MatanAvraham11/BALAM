@@ -118,16 +118,24 @@ st.markdown(
         font-weight: 600;
     }
 
-    /* File uploader — border on the section only so the label stays above */
+    /* File uploader */
+    [data-testid="stFileUploader"] {
+        width: 100%;
+    }
     [data-testid="stFileUploader"] section {
         border: 2px dashed #cbd5e1;
         border-radius: 12px;
         padding: 0;
+        min-height: 168px;
     }
     [data-testid="stFileUploaderDropzone"] {
-        padding: 1.6rem 1rem;
+        min-height: 168px;
+        padding: 1.25rem 1rem;
         width: 100%;
         box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
     /* Section title */
@@ -205,6 +213,7 @@ with tab_balam:
         'גרור לכאן קובץ בל"מ (PDF) או לחץ לבחירה',
         type=["pdf"],
         key="balam_uploader",
+        label_visibility="collapsed",
     )
 
     if uploaded_balam is not None:
@@ -308,6 +317,7 @@ with tab_drawing:
         "גרור לכאן שרטוט הנדסי (PDF) או לחץ לבחירה",
         type=["pdf"],
         key="drawing_uploader",
+        label_visibility="collapsed",
     )
 
     if uploaded_drawing is not None:
