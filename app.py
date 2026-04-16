@@ -118,11 +118,31 @@ st.markdown(
         font-weight: 600;
     }
 
-    /* File uploader */
+    /* File uploader — dashed border wraps everything */
     [data-testid="stFileUploader"] {
         border: 2px dashed #cbd5e1;
         border-radius: 12px;
-        padding: 0.8rem;
+        padding: 1.2rem 1rem;
+    }
+    [data-testid="stFileUploader"] label {
+        text-align: center;
+        display: block;
+        margin-bottom: 0.5rem;
+    }
+    [data-testid="stFileUploader"] section {
+        border: none !important;
+        background: transparent !important;
+        padding: 0;
+    }
+    [data-testid="stFileUploaderDropzone"] {
+        background: transparent !important;
+        border: none !important;
+        min-height: 80px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.4rem;
     }
 
     /* Section title */
