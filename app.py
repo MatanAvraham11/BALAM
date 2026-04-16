@@ -118,17 +118,14 @@ st.markdown(
         font-weight: 600;
     }
 
-    /* File uploader */
-    [data-testid="stFileUploader"] {
+    /* File uploader — border on the section only so the label stays above */
+    [data-testid="stFileUploader"] section {
         border: 2px dashed #cbd5e1;
         border-radius: 12px;
         padding: 0;
     }
-    [data-testid="stFileUploader"] section {
-        padding: 0;
-    }
     [data-testid="stFileUploaderDropzone"] {
-        padding: 1.8rem 1rem;
+        padding: 1.6rem 1rem;
         width: 100%;
         box-sizing: border-box;
     }
