@@ -308,6 +308,7 @@ with tab_balam:
 with tab_drawing:
     from parse_drawing import (
         DrawingAnalysis,
+        DrawingUserRoute,
         analyze_full_drawing,
         annotate_pdf,
         dimensions_to_csv_string,
@@ -318,6 +319,33 @@ with tab_drawing:
         "העלה שרטוט הנדסי (PDF) — נחלץ את כל המידות, "
         "נמספר אותן ונחזיר CSV וגם שרטוט ממוספר."
     )
+
+    drawing_route: DrawingUserRoute = st.selectbox(
+        "סוג שרטוט / מצב חילוץ",
+        options=("auto", "vector", "scan", "stamped"),
+        format_func=lambda x: {
+            "auto": "אוטומטי (מומלץ)",
+            "vector": "PDF עם טקסט (וקטורי)",
+            "scan": "סריקה / תמונה (חילוץ מותאם)",
+            "stamped": "מחותם ידנית (התעלם מסימוני עט)",
+        }[x],
+        index=0,
+        key="drawing_route_select",
+        help=(
+            "אוטומטי: מזהה אם יש שכבת טקסט עשירה או דומה לסריקה. "
+            "מחותם: משתמש בזיהוי תמונה ומתעלם מעיגולים/מספרים ידניים אדומים."
+        ),
+    )
+    if drawing_route == "scan":
+        st.caption(
+            "נבחר מסלול סריקה: החילוץ משתמש בניתוח תמונה לכל עמוד "
+            "(עלות API גבוהה יותר ממסלול וקטורי)."
+        )
+    elif drawing_route == "stamped":
+        st.caption(
+            "מסלול שרטוט מחותם: מומלץ כשהוסיפו סימון ידני אדום על הדפס — "
+            "המערכת מנסה לזהות מידות מהדפס ולא מהמספרים המצוירים."
+        )
 
     uploaded_drawing = st.file_uploader(
         "גרור לכאן שרטוט הנדסי (PDF) או לחץ לבחירה",
@@ -335,10 +363,26 @@ with tab_drawing:
 
             try:
                 with st.spinner("מנתח את השרטוט..."):
-                    analysis: DrawingAnalysis = analyze_full_drawing(tmp_path)
+                    analysis: DrawingAnalysis = analyze_full_drawing(
+                        tmp_path, user_route=drawing_route
+                    )
 
                 all_dims = get_all_dimensions(analysis)
                 st.success(f"זוהו {len(all_dims)} מידות/הערות בשרטוט")
+
+                if (
+                    drawing_route == "auto"
+                    and analysis.page_routes
+                    and any(
+                        r in ("scan", "stamped_hint", "scan_fallback")
+                        for r in analysis.page_routes
+                    )
+                ):
+                    st.info(
+                        "במצב אוטומטי זוהו לפחות עמוד אחד כמתאים לסריקה או למסלול תמונה — "
+                        "החילוץ השתמש בניתוח תמונה לעמודים האלה (עלות API גבוהה יותר). "
+                        f"מסלולים לפי עמוד: {', '.join(analysis.page_routes)}."
+                    )
 
                 st.markdown(
                     '<div class="info-card">'
