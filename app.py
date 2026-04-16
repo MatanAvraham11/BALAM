@@ -134,8 +134,27 @@ st.markdown(
         width: 100%;
         box-sizing: border-box;
         display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
         align-items: center;
         justify-content: center;
+        text-align: center;
+    }
+    [data-testid="stFileUploader"]:first-of-type [data-testid="stFileUploaderDropzone"]::before {
+        content: 'גרור לכאן קובץ בל"מ (PDF) או לחץ לבחירה';
+        color: #1a1a2e;
+        font-size: 1rem;
+        font-weight: 500;
+        line-height: 1.5;
+        max-width: 90%;
+    }
+    [data-testid="stFileUploader"]:last-of-type [data-testid="stFileUploaderDropzone"]::before {
+        content: 'גרור לכאן שרטוט הנדסי (PDF) או לחץ לבחירה';
+        color: #1a1a2e;
+        font-size: 1rem;
+        font-weight: 500;
+        line-height: 1.5;
+        max-width: 90%;
     }
 
     /* Section title */
