@@ -122,7 +122,15 @@ st.markdown(
     [data-testid="stFileUploader"] {
         border: 2px dashed #cbd5e1;
         border-radius: 12px;
-        padding: 0.8rem;
+        padding: 0;
+    }
+    [data-testid="stFileUploader"] section {
+        padding: 0;
+    }
+    [data-testid="stFileUploaderDropzone"] {
+        padding: 1.8rem 1rem;
+        width: 100%;
+        box-sizing: border-box;
     }
 
     /* Section title */
