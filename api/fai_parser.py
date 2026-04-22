@@ -57,7 +57,15 @@ LABEL_COLOR = (0, 0, 0)
 LABEL_FONTSIZE = 7
 LABEL_MARGIN = 4.0
 
-# Title-block exclusion zone (fraction of page dimensions)
+# Anchor-based title-block exclusion
+_TITLE_ANCHORS = (
+    "CAGE CODE", "UNCLASSIFIED", "SCALE", "TITLE",
+    "APVD", "DRAWN",
+    "GENERAL TOLERANCES", "UNLESS OTHERWISE SPECIFIED",
+)
+_TITLE_MARGIN = 20.0
+
+# Fallback fixed-fraction exclusion (used when no anchor keywords found)
 _TITLE_BLOCK_X_FRAC = 0.62
 _TITLE_BLOCK_Y_FRAC = 0.72
 
@@ -147,19 +155,51 @@ def _is_border_label(sp: _Span, pw: float, ph: float) -> bool:
     return cx < mx or cx > pw - mx or cy < my or cy > ph - my
 
 
-def _is_in_title_block(sp: _Span, pw: float, ph: float) -> bool:
+def _find_title_anchor_bboxes(spans: list[_Span]) -> list[tuple[float, float, float, float]]:
+    bboxes: list[tuple[float, float, float, float]] = []
+    for sp in spans:
+        up = sp.text.upper()
+        if any(kw in up for kw in _TITLE_ANCHORS):
+            bboxes.append(sp.bbox)
+    return bboxes
+
+
+def _title_block_rect(
+    anchor_bboxes: list[tuple[float, float, float, float]],
+) -> tuple[float, float, float, float] | None:
+    if not anchor_bboxes:
+        return None
+    x0 = min(b[0] for b in anchor_bboxes) - _TITLE_MARGIN
+    y0 = min(b[1] for b in anchor_bboxes) - _TITLE_MARGIN
+    x1 = max(b[2] for b in anchor_bboxes) + _TITLE_MARGIN
+    y1 = max(b[3] for b in anchor_bboxes) + _TITLE_MARGIN
+    return (x0, y0, x1, y1)
+
+
+def _is_in_title_block_fallback(sp: _Span, pw: float, ph: float) -> bool:
     cx = (sp.bbox[0] + sp.bbox[2]) / 2
     cy = (sp.bbox[1] + sp.bbox[3]) / 2
     return cx >= pw * _TITLE_BLOCK_X_FRAC and cy >= ph * _TITLE_BLOCK_Y_FRAC
 
 
 def _filter_spans(
-    spans: list[_Span], pw: float, ph: float,
+    spans: list[_Span],
+    pw: float,
+    ph: float,
+    title_rect: tuple[float, float, float, float] | None,
 ) -> list[_Span]:
-    return [
-        sp for sp in spans
-        if not _is_border_label(sp, pw, ph) and not _is_in_title_block(sp, pw, ph)
-    ]
+    out: list[_Span] = []
+    for sp in spans:
+        if _is_border_label(sp, pw, ph):
+            continue
+        if title_rect is not None:
+            if _rects_overlap(sp.bbox, title_rect):
+                continue
+        else:
+            if _is_in_title_block_fallback(sp, pw, ph):
+                continue
+        out.append(sp)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -299,62 +339,65 @@ def _rects_overlap(
 
 
 def _place_balloon_center(
-    text_bbox: tuple[float, float, float, float],
-    pw: float, ph: float,
+    item_bbox: tuple[float, float, float, float],
+    text_bboxes: list[tuple[float, float, float, float]],
+    pw: float,
+    ph: float,
 ) -> tuple[float, float]:
-    x0, y0, x1, y1 = text_bbox
-    midx = (x0 + x1) / 2
-    midy = (y0 + y1) / 2
-    r = CIRCLE_RADIUS
-    m = LABEL_MARGIN
-    pad = 2.5
-    eff = r + pad
-    tb = (x0 - 0.5, y0 - 0.5, x1 + 0.5, y1 + 0.5)
-
-    def circle_bbox(cx: float, cy: float) -> tuple[float, float, float, float]:
-        cx = max(r, min(pw - r, cx))
-        cy = max(r, min(ph - r, cy))
-        return (cx - eff, cy - eff, cx + eff, cy + eff)
-
-    trials = [
-        (x0 - m - r, midy),
-        (midx, y0 - m - r),
-        (midx, y1 + m + r),
-        (x1 + m + r, midy),
-        (x0 - m - r, y0 - m - r),
-        (x1 + m + r, y0 - m - r),
-        (x0 - m - r, y1 + m + r),
-        (x1 + m + r, y1 + m + r),
-    ]
+    x0, y0, x1, y1 = item_bbox
+    mcx = (x0 + x1) / 2
+    mcy = (y0 + y1) / 2
+    eff = CIRCLE_RADIUS + 2.0
+    base = max((x1 - x0) * 0.5 + CIRCLE_RADIUS + 6, 18.0)
 
     best: tuple[float, float] | None = None
     best_score = float("inf")
-    for tcx, tcy in trials:
-        cx = max(r, min(pw - r, tcx))
-        cy = max(r, min(ph - r, tcy))
-        cb = circle_bbox(cx, cy)
-        if not _rects_overlap(cb, tb):
-            return cx, cy
-        ix0 = max(cb[0], tb[0])
-        iy0 = max(cb[1], tb[1])
-        ix1 = min(cb[2], tb[2])
-        iy1 = min(cb[3], tb[3])
-        inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
-        dist = (cx - midx) ** 2 + (cy - midy) ** 2
-        score = inter * 500.0 + dist
-        if score < best_score:
-            best_score = score
-            best = (cx, cy)
-    return best if best is not None else (max(r, x0 - m - r), max(r, midy))
+
+    for itry in range(1, 100):
+        R = base + itry * 1.5
+        for a in range(8):
+            ang = a * (2 * math.pi / 8) - math.pi / 2
+            cx = mcx + R * math.cos(ang)
+            cy = mcy + R * math.sin(ang)
+            cx = max(eff, min(pw - eff, cx))
+            cy = max(eff, min(ph - eff, cy))
+            cb = (cx - eff, cy - eff, cx + eff, cy + eff)
+
+            hit = False
+            total_inter = 0.0
+            for tb in text_bboxes:
+                if _rects_overlap(cb, tb):
+                    hit = True
+                    ix = max(0.0, min(cb[2], tb[2]) - max(cb[0], tb[0]))
+                    iy = max(0.0, min(cb[3], tb[3]) - max(cb[1], tb[1]))
+                    total_inter += ix * iy
+            if _rects_overlap(cb, item_bbox):
+                hit = True
+
+            if not hit:
+                return (cx, cy)
+
+            dist = (cx - mcx) ** 2 + (cy - mcy) ** 2
+            score = total_inter * 500.0 + dist
+            if score < best_score:
+                best_score = score
+                best = (cx, cy)
+
+    return best if best is not None else (max(eff, mcx + base), max(eff, mcy - base))
 
 
-def _annotate_pdf(doc: fitz.Document, items: list[FAIItem]) -> bytes:
+def _annotate_pdf(
+    doc: fitz.Document,
+    items: list[FAIItem],
+    page_text_bboxes: list[list[tuple[float, float, float, float]]],
+) -> bytes:
     for item in items:
         if item.page_index >= len(doc):
             continue
         page = doc[item.page_index]
         pw, ph = page.rect.width, page.rect.height
-        cx, cy = _place_balloon_center(item.bbox, pw, ph)
+        bboxes = page_text_bboxes[item.page_index] if item.page_index < len(page_text_bboxes) else []
+        cx, cy = _place_balloon_center(item.bbox, bboxes, pw, ph)
 
         shape = page.new_shape()
         shape.draw_circle(fitz.Point(cx, cy), CIRCLE_RADIUS)
@@ -411,6 +454,7 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
     page_sizes: list[tuple[float, float]] = []
     all_notes: list[FAIItem] = []
     all_dims: list[FAIItem] = []
+    page_text_bboxes: list[list[tuple[float, float, float, float]]] = []
 
     for page_idx in range(len(doc)):
         page = doc[page_idx]
@@ -418,7 +462,10 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
         page_sizes.append((pw, ph))
 
         raw_spans = _extract_spans(page, page_idx)
-        spans = _filter_spans(raw_spans, pw, ph)
+        page_text_bboxes.append([sp.bbox for sp in raw_spans])
+
+        title_rect = _title_block_rect(_find_title_anchor_bboxes(raw_spans))
+        spans = _filter_spans(raw_spans, pw, ph, title_rect)
 
         notes = _parse_notes(spans, page_idx)
         note_bboxes = {n.bbox for n in notes}
@@ -431,7 +478,7 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
     items = _assign_numbers(all_notes, all_dims, page_sizes)
     result = FAIResult(items=items, page_sizes=page_sizes)
 
-    annotated_bytes = _annotate_pdf(doc, items)
+    annotated_bytes = _annotate_pdf(doc, items, page_text_bboxes)
     doc.close()
     return result, annotated_bytes
 
