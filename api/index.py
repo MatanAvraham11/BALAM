@@ -23,6 +23,8 @@ import sys
 import tempfile
 from typing import Any
 
+import eval_type_backport  # noqa: F401  # Pydantic needs this on Py<3.10 for PEP604 unions in parsers
+
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
