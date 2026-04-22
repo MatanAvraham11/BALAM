@@ -18,11 +18,13 @@ import hashlib
 import hmac
 import io
 import os
+import secrets
+import sys
 import tempfile
 from typing import Any
 
 import pandas as pd
-from fastapi import Cookie, FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -77,8 +79,23 @@ def _require_auth(request: Request) -> None:
 # Global exception handler
 # ---------------------------------------------------------------------------
 
+
+def _http_exc_body(exc: HTTPException) -> dict[str, Any]:
+    d = exc.detail
+    if isinstance(d, str):
+        return {"detail": d}
+    if isinstance(d, (list, dict)):
+        return {"detail": d}
+    return {"detail": str(d)}
+
+
 @app.exception_handler(Exception)
 async def _global_exc_handler(_request: Request, exc: Exception) -> JSONResponse:
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_http_exc_body(exc),
+        )
     return JSONResponse(
         status_code=500,
         content={"error": str(exc)},
@@ -90,13 +107,46 @@ async def _global_exc_handler(_request: Request, exc: Exception) -> JSONResponse
 # ---------------------------------------------------------------------------
 
 class LoginBody(BaseModel):
+    """JSON body: {\"password\": \"...\"} (Content-Type: application/json)."""
+
     password: str
 
 
+def _app_password() -> str:
+    return (os.environ.get("APP_PASSWORD") or "").strip()
+
+
+def _passwords_match(entered: str, expected: str) -> bool:
+    a, b = entered.strip(), expected.strip()
+    if len(a) != len(b):
+        return False
+    return secrets.compare_digest(a, b)
+
+
 @app.post("/api/login")
-async def login(body: LoginBody) -> JSONResponse:
-    expected = os.environ.get("APP_PASSWORD", "")
-    if not expected or body.password != expected:
+async def login(request: Request, body: LoginBody) -> JSONResponse:
+    # Temporary: confirm env binding in Vercel (never log the value)
+    print(
+        "[login] APP_PASSWORD in os.environ: "
+        f"{bool(os.environ.get('APP_PASSWORD'))!s}; "
+        f"Content-Type={request.headers.get('content-type', 'missing')!r}; "
+        f"password field len={len(body.password)} (after Pydantic parse)",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    expected = _app_password()
+    if not expected:
+        print(
+            "[login] APP_PASSWORD empty/whitespace-only after strip",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise HTTPException(
+            status_code=500, detail="Server configuration: APP_PASSWORD is not set"
+        )
+
+    if not _passwords_match(body.password, expected):
         raise HTTPException(status_code=401, detail="סיסמה שגויה")
 
     resp = JSONResponse(content={"ok": True})
