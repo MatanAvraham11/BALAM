@@ -46,17 +46,18 @@ app = FastAPI()
 # Auth helpers
 # ---------------------------------------------------------------------------
 
-def _session_secret() -> str:
-    s = os.environ.get("APP_SESSION_SECRET", "")
-    if not s:
-        raise RuntimeError("APP_SESSION_SECRET is not set")
-    return s
+
+def _session_secret_value() -> str:
+    """Return stripped APP_SESSION_SECRET, or empty if unset."""
+    return (os.environ.get("APP_SESSION_SECRET") or "").strip()
 
 
-def _sign(value: str) -> str:
+def _hmac_sign_payload(secret: str, value: str) -> str:
+    if not secret:
+        raise ValueError("session secret is empty")
     return hmac.new(
-        _session_secret().encode(),
-        value.encode(),
+        secret.encode("utf-8"),
+        value.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
@@ -68,7 +69,16 @@ _AUTH_PAYLOAD = "ok"
 def _verify_cookie(token: str | None) -> bool:
     if not token:
         return False
-    return hmac.compare_digest(token, _sign(_AUTH_PAYLOAD))
+    secret = _session_secret_value()
+    if not secret:
+        return False
+    try:
+        expected = _hmac_sign_payload(secret, _AUTH_PAYLOAD)
+    except (TypeError, ValueError):
+        return False
+    if len(token) != len(expected):
+        return False
+    return hmac.compare_digest(token, expected)
 
 
 def _require_auth(request: Request) -> None:
@@ -119,7 +129,8 @@ def _app_password() -> str:
 
 
 def _passwords_match(entered: str, expected: str) -> bool:
-    a, b = entered.strip(), expected.strip()
+    a = str(entered or "").strip()
+    b = str(expected or "").strip()
     if len(a) != len(b):
         return False
     return secrets.compare_digest(a, b)
@@ -129,10 +140,12 @@ def _passwords_match(entered: str, expected: str) -> bool:
 async def login(request: Request, body: LoginBody) -> JSONResponse:
     # Temporary: confirm env binding in Vercel (never log the value)
     print(
-        "[login] APP_PASSWORD in os.environ: "
+        "[login] APP_PASSWORD set="
         f"{bool(os.environ.get('APP_PASSWORD'))!s}; "
+        f"APP_SESSION_SECRET set="
+        f"{bool((os.environ.get('APP_SESSION_SECRET') or '').strip())!s}; "
         f"Content-Type={request.headers.get('content-type', 'missing')!r}; "
-        f"password field len={len(body.password)} (after Pydantic parse)",
+        f"password len={len(str(body.password))} (Pydantic)",
         file=sys.stderr,
         flush=True,
     )
@@ -148,13 +161,37 @@ async def login(request: Request, body: LoginBody) -> JSONResponse:
             status_code=500, detail="Server configuration: APP_PASSWORD is not set"
         )
 
-    if not _passwords_match(body.password, expected):
+    if not _passwords_match(str(body.password), expected):
         raise HTTPException(status_code=401, detail="סיסמה שגויה")
 
+    session_secret = _session_secret_value()
+    if not session_secret:
+        print(
+            "[login] APP_SESSION_SECRET empty after strip; cannot set auth cookie",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Server configuration: APP_SESSION_SECRET is not set",
+        )
+
     resp = JSONResponse(content={"ok": True})
+    try:
+        cookie_value = _hmac_sign_payload(session_secret, _AUTH_PAYLOAD)
+    except (TypeError, ValueError) as e:
+        print(
+            f"[login] cookie signing error: {type(e).__name__}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise HTTPException(
+            status_code=500, detail="Server configuration: failed to set session cookie"
+        ) from e
+
     resp.set_cookie(
         key=_AUTH_COOKIE,
-        value=_sign(_AUTH_PAYLOAD),
+        value=cookie_value,
         httponly=True,
         samesite="lax",
         secure=True,
