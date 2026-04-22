@@ -37,13 +37,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from parse_balam import PurchaseOrder, extract_text_from_pdf, parse_balam_text
-from parse_drawing import (
-    DrawingAnalysis,
-    analyze_full_drawing,
-    annotate_pdf,
-    dimensions_to_csv_string,
-    get_all_dimensions,
-)
+from fai_parser import items_to_csv, run_fai
 
 app = FastAPI()
 
@@ -289,32 +283,28 @@ async def drawing_endpoint(request: Request, file: UploadFile) -> JSONResponse:
         tmp_path = tmp.name
 
     try:
-        analysis: DrawingAnalysis = analyze_full_drawing(tmp_path)
-        all_dims = get_all_dimensions(analysis)
+        result, annotated_pdf_bytes = run_fai(tmp_path)
 
-        dimensions = [
+        items_dicts = [
             {
-                "number": d.number,
-                "dimension_type": d.dimension_type,
-                "value": d.value,
+                "balloon_number": it.balloon_number,
+                "text": it.text,
+                "dimension_type": it.dimension_type,
+                "tolerance": it.tolerance,
             }
-            for d in all_dims
+            for it in result.items
         ]
 
-        csv_str = dimensions_to_csv_string(analysis)
+        csv_str = items_to_csv(result.items)
         csv_bytes = csv_str.encode("utf-8-sig")
-
-        annotated_pdf_bytes = annotate_pdf(tmp_path, analysis)
 
         original_name = file.filename or "drawing"
         base = original_name.rsplit(".", 1)[0]
 
         return JSONResponse(content={
-            "drawing_title": analysis.drawing_title,
-            "part_number": analysis.part_number,
-            "dimensions": dimensions,
+            "items": items_dicts,
             "csv_base64": base64.b64encode(csv_bytes).decode(),
-            "csv_filename": f"{base}_dimensions.csv",
+            "csv_filename": f"{base}_fai.csv",
             "annotated_pdf_base64": base64.b64encode(annotated_pdf_bytes).decode(),
             "annotated_pdf_filename": f"{base}_annotated.pdf",
         })

@@ -2,27 +2,25 @@
 
 import { useMemo, useState } from "react";
 import FileDropzone from "./FileDropzone";
-import InfoCard from "./InfoCard";
 import DataTable from "./DataTable";
 import { downloadBase64 } from "../lib/download";
 
-type DimensionRow = {
-  number: number;
+type FAIItem = {
+  balloon_number: number;
+  text: string;
   dimension_type: string;
-  value: string;
+  tolerance: string;
 };
 
 type DrawingResponse = {
-  drawing_title: string;
-  part_number: string;
-  dimensions: DimensionRow[];
+  items: FAIItem[];
   csv_base64: string;
   csv_filename: string;
   annotated_pdf_base64: string;
   annotated_pdf_filename: string;
 };
 
-const COLUMNS = ["מספר", "סוג מידה", "ערך"];
+const COLUMNS = ["מספר בלון", "מידה / הערה", "סוג מידה", "טולרנס", "נמצא"];
 
 export default function DrawingTab() {
   const [file, setFile] = useState<File | null>(null);
@@ -33,10 +31,12 @@ export default function DrawingTab() {
 
   const rows = useMemo(
     () =>
-      (data?.dimensions ?? []).map((d) => ({
-        "מספר": d.number,
-        "סוג מידה": d.dimension_type,
-        "ערך": d.value,
+      (data?.items ?? []).map((it) => ({
+        "מספר בלון": it.balloon_number,
+        "מידה / הערה": it.text,
+        "סוג מידה": it.dimension_type,
+        "טולרנס": it.tolerance,
+        "נמצא": "",
       })),
     [data],
   );
@@ -66,7 +66,7 @@ export default function DrawingTab() {
         return;
       }
       setData(json as DrawingResponse);
-      setSuccess(`זוהו ${json.dimensions.length} מידות/הערות בשרטוט`);
+      setSuccess(`זוהו ${json.items.length} מידות/הערות בשרטוט`);
     } catch {
       setError("שגיאה בתקשורת עם השרת");
     } finally {
@@ -126,13 +126,6 @@ export default function DrawingTab() {
 
       {data && (
         <>
-          <InfoCard
-            items={[
-              { label: "שם החלק", value: data.drawing_title },
-              { label: "מספר חלק", value: data.part_number },
-            ]}
-          />
-
           <div className="text-base font-bold text-gray-900 mt-2">
             טבלת מידות
           </div>
