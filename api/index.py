@@ -23,6 +23,12 @@ import sys
 import tempfile
 from typing import Any
 
+# Vercel runs this file with import path that does not include the api/ directory,
+# so sibling modules (parse_balam, parse_drawing) are not found unless we add it.
+_API_DIR = os.path.dirname(os.path.abspath(__file__))
+if _API_DIR not in sys.path:
+    sys.path.insert(0, _API_DIR)
+
 import eval_type_backport  # noqa: F401  # Pydantic needs this on Py<3.10 for PEP604 unions in parsers
 
 import pandas as pd
