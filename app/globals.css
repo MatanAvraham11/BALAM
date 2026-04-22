@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --font-sans: var(--font-heebo), ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  direction: rtl;
+  text-align: right;
+}

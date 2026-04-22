@@ -2,6 +2,9 @@ pdfplumber
 openai
 pandas
 pydantic
-streamlit
 pymupdf
 Pillow
+fastapi
+uvicorn
+python-multipart
+eval-type-backport>=0.2.0
