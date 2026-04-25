@@ -94,6 +94,7 @@ _LINE_START_RE = re.compile(r'הרוש רפסמ')
 _SKU_RE = re.compile(r'([\w.\-/]+) קפס ט"קמ')
 _QTY_RE = re.compile(r'([\d.]+) תשרדנ תומכ')
 _REV_RE = re.compile(r'([A-Za-z0-9\-]+):האצוה')
+_MISSING_REV = 'לא מצוין בבל"מ'
 
 
 def parse_with_regex(text: str) -> PurchaseOrder | None:
@@ -121,7 +122,7 @@ def parse_with_regex(text: str) -> PurchaseOrder | None:
             continue
 
         rev_m = _REV_RE.search(chunk)
-        revision = rev_m.group(1) if rev_m else 'לא מצוין בבל"מ'
+        revision = rev_m.group(1) if rev_m else _MISSING_REV
 
         line_items.append(LineItem(
             supplier_sku=sku_m.group(1).strip(),
@@ -142,12 +143,30 @@ def parse_with_regex(text: str) -> PurchaseOrder | None:
     )
 
 
+def _inherit_revision_for_last_item(items: list[LineItem]) -> None:
+    """If the last line item has no revision but a sibling with the same SKU
+    does, copy the sibling's revision so the downstream groupby aggregates
+    them together."""
+    if not items:
+        return
+    last = items[-1]
+    if last.revision != _MISSING_REV:
+        return
+    for it in items[:-1]:
+        if it.supplier_sku == last.supplier_sku and it.revision != _MISSING_REV:
+            last.revision = it.revision
+            return
+
+
 def parse_balam_text(text: str) -> PurchaseOrder:
     """Parse BLM text: regex first (free & instant), GPT-4o fallback."""
     result = parse_with_regex(text)
     if result is not None:
+        _inherit_revision_for_last_item(result.line_items)
         return result
-    return parse_with_openai(text)
+    order = parse_with_openai(text)
+    _inherit_revision_for_last_item(order.line_items)
+    return order
 
 
 # ---------------------------------------------------------------------------
