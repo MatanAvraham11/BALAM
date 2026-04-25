@@ -13,17 +13,20 @@ export default function Tabs({ tabs }: { tabs: Tab[] }) {
 
   return (
     <div className="w-full">
-      <div className="flex gap-2 border-b border-gray-200 mb-6" dir="rtl">
+      <div
+        className="mb-6 flex gap-2 rounded-xl border border-gray-200 bg-white p-1 shadow-sm"
+        dir="rtl"
+      >
         {tabs.map((t) => {
           const isActive = t.id === active;
           return (
             <button
               key={t.id}
               onClick={() => setActive(t.id)}
-              className={`px-5 py-2 font-semibold text-sm transition-colors border-b-2 -mb-px ${
+              className={`flex-1 rounded-lg px-5 py-2.5 text-sm font-semibold transition-colors ${
                 isActive
-                  ? "text-primary border-primary"
-                  : "text-gray-600 border-transparent hover:text-gray-900"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-gray-600 hover:bg-blue-50 hover:text-blue-600"
               }`}
             >
               {t.label}

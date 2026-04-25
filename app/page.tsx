@@ -4,9 +4,9 @@ import DrawingTab from "./components/DrawingTab";
 
 export default function Home() {
   return (
-    <div className="flex flex-col items-center min-h-screen">
-      <header className="w-full max-w-2xl mx-auto pt-10 pb-3 text-center">
-        <h1 className="text-4xl font-extrabold text-primary tracking-tight">
+    <div className="flex min-h-screen flex-col items-center bg-gray-50">
+      <header className="mx-auto w-full max-w-4xl px-4 pt-10 pb-4 text-center">
+        <h1 className="text-4xl font-extrabold tracking-tight text-blue-600">
           נתיב | Nativ
         </h1>
         <p className="mt-1 text-sm text-gray-500">
@@ -14,9 +14,7 @@ export default function Home() {
         </p>
       </header>
 
-      <hr className="w-full max-w-2xl border-t border-gray-200 mb-6" />
-
-      <main className="w-full max-w-2xl mx-auto px-4 pb-16">
+      <main className="mx-auto w-full max-w-5xl px-4 pb-16">
         <Tabs
           tabs={[
             { id: "balam", label: 'בל"מ', content: <BalamTab /> },

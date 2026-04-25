@@ -20,23 +20,45 @@ export default function FileDropzone({ label, file, onFile, disabled }: Props) {
   });
 
   return (
-    <div
-      {...getRootProps()}
-      className={`w-full rounded-xl border-2 border-dashed px-4 py-6 cursor-pointer transition-colors text-center ${
-        isDragActive
-          ? "border-primary bg-blue-50"
-          : "border-gray-300 bg-white hover:border-gray-400"
-      } ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
-    >
-      <input {...getInputProps()} />
-      <p className="text-sm text-gray-700 font-medium">{label}</p>
-      {file ? (
-        <p className="mt-2 text-xs text-gray-600">
-          נבחר: <span className="font-semibold">{file.name}</span>
+    <div className="space-y-3">
+      <div
+        {...getRootProps()}
+        className={`w-full rounded-xl border-2 border-dashed px-5 py-8 cursor-pointer bg-white text-center shadow-sm transition-colors ${
+          isDragActive
+            ? "border-blue-600 bg-blue-50"
+            : "border-gray-200 hover:border-blue-400 hover:bg-blue-50"
+        } ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
+      >
+        <input {...getInputProps()} />
+        <p className="text-sm font-semibold text-gray-900">{label}</p>
+        {file ? (
+          <p className="mt-2 text-xs text-blue-600">
+            נבחר: <span className="font-semibold">{file.name}</span>
+          </p>
+        ) : (
+          <p className="mt-2 text-xs text-gray-500">PDF בלבד</p>
+        )}
+      </div>
+
+      <div className="flex items-start gap-2 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          className="mt-0.5 h-5 w-5 shrink-0 text-blue-600"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        >
+          <rect x="5" y="11" width="14" height="10" rx="2" />
+          <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+        </svg>
+        <p>
+          אבטחת מידע תעשייתית: ניתוח השרטוט מתבצע בשרת מקומי. הקבצים אינם
+          נשמרים, ואינם משותפים עם שום מודל צד-שלישי או בינה מלאכותית.
         </p>
-      ) : (
-        <p className="mt-2 text-xs text-gray-400">PDF בלבד</p>
-      )}
+      </div>
     </div>
   );
 }

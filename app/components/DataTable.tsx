@@ -7,14 +7,14 @@ type Props = {
 
 export default function DataTable({ columns, rows }: Props) {
   return (
-    <div className="w-full overflow-x-auto rounded-xl border border-gray-200 bg-white">
+    <div className="w-full overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
       <table className="w-full text-sm">
-        <thead className="bg-gray-50 text-gray-700">
+        <thead className="bg-blue-50 text-gray-700">
           <tr>
             {columns.map((c) => (
               <th
                 key={c}
-                className="px-4 py-2.5 text-right font-semibold border-b border-gray-200"
+                className="border-b border-gray-200 px-4 py-3 text-right text-xs font-bold uppercase tracking-wide"
               >
                 {c}
               </th>
@@ -26,7 +26,7 @@ export default function DataTable({ columns, rows }: Props) {
             <tr>
               <td
                 colSpan={columns.length}
-                className="px-4 py-6 text-center text-gray-400"
+                className="px-4 py-8 text-center text-gray-400"
               >
                 אין נתונים
               </td>
@@ -35,13 +35,22 @@ export default function DataTable({ columns, rows }: Props) {
             rows.map((row, i) => (
               <tr
                 key={i}
-                className="border-b border-gray-100 last:border-b-0 hover:bg-gray-50"
+                className="border-b border-gray-100 transition-colors last:border-b-0 hover:bg-gray-50"
               >
-                {columns.map((c) => (
-                  <td key={c} className="px-4 py-2 text-right text-gray-800">
-                    {row[c] ?? ""}
-                  </td>
-                ))}
+                {columns.map((c) => {
+                  const isMonospace = c === "מספר בלון" || c === "מידה / הערה";
+
+                  return (
+                    <td
+                      key={c}
+                      className={`px-4 py-3 text-right text-gray-800 ${
+                        isMonospace ? "font-mono tabular-nums" : ""
+                      }`}
+                    >
+                      {row[c] ?? ""}
+                    </td>
+                  );
+                })}
               </tr>
             ))
           )}

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import FileDropzone from "./FileDropzone";
 import DataTable from "./DataTable";
+import ProcessingStatus from "./ProcessingStatus";
 import { downloadBase64 } from "../lib/download";
 
 type FAIItem = {
@@ -106,11 +107,13 @@ export default function DrawingTab() {
         <button
           onClick={handleExtract}
           disabled={loading}
-          className="w-full rounded-lg bg-primary px-4 py-2.5 text-white font-semibold hover:bg-primary-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+          className="w-full rounded-lg bg-blue-600 px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {loading ? "מנתח את השרטוט..." : "חלץ מידות"}
+          {loading ? "מעבד קובץ..." : "חלץ מידות"}
         </button>
       )}
+
+      {loading && <ProcessingStatus />}
 
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
@@ -129,14 +132,13 @@ export default function DrawingTab() {
           <div className="text-base font-bold text-gray-900 mt-2">
             טבלת מידות
           </div>
-          <DataTable columns={COLUMNS} rows={rows} />
-
           <button
             onClick={handleDownloadCsv}
-            className="w-full rounded-lg bg-primary px-4 py-2.5 text-white font-semibold hover:bg-primary-hover transition-colors"
+            className="w-full rounded-lg bg-blue-600 px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
           >
-            הורד CSV מידות
+            הורד כ-Excel / CSV
           </button>
+          <DataTable columns={COLUMNS} rows={rows} />
 
           <div className="text-base font-bold text-gray-900 mt-2">
             שרטוט ממוספר
@@ -151,7 +153,7 @@ export default function DrawingTab() {
 
           <button
             onClick={handleDownloadPdf}
-            className="w-full rounded-lg bg-primary px-4 py-2.5 text-white font-semibold hover:bg-primary-hover transition-colors"
+            className="w-full rounded-lg border border-blue-200 bg-white px-4 py-2.5 font-semibold text-blue-600 shadow-sm transition-colors hover:bg-blue-50"
           >
             הורד שרטוט ממוספר (PDF)
           </button>
