@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
@@ -33,26 +34,31 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex flex-col items-center min-h-screen bg-gray-50">
-      <header className="w-full max-w-2xl mx-auto pt-10 pb-4 text-center">
-        <h1 className="text-4xl font-extrabold text-primary tracking-tight">
-          נתיב | Nativ
-        </h1>
-        <p className="mt-1 text-sm text-gray-500">
+    <div className="flex min-h-screen flex-col items-center bg-nativ-light text-nativ-dark">
+      <header className="w-full max-w-md px-4 pt-8 pb-2 text-center sm:px-6">
+        <Image
+          src="/branding/nativ-logo.png"
+          alt="Nativ"
+          width={480}
+          height={160}
+          priority
+          className="mx-auto h-12 w-auto max-h-14 max-w-full object-contain sm:h-16 sm:max-h-20"
+        />
+        <p className="mt-3 text-xs leading-snug text-nativ-dark/70 sm:text-sm">
           חילוץ נתונים חכם ממסמכי רכש ושרטוטים הנדסיים
         </p>
       </header>
 
-      <hr className="w-full max-w-2xl border-t border-gray-200 mb-8" />
+      <hr className="mb-6 w-full max-w-md border-t border-gray-200 px-4 sm:px-6" />
 
-      <main className="w-full max-w-md mx-auto px-4">
+      <main className="mx-auto w-full max-w-md flex-1 px-4 pb-12 sm:px-6">
         <form
           onSubmit={handleSubmit}
-          className="bg-white border border-gray-200 rounded-xl p-6 shadow-sm"
+          className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm"
         >
           <label
             htmlFor="password"
-            className="block text-sm font-medium text-gray-700 mb-2"
+            className="mb-2 block text-sm font-medium text-nativ-dark"
           >
             סיסמה
           </label>
@@ -62,17 +68,17 @@ export default function LoginPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoFocus
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-base text-nativ-dark focus:border-nativ-gold focus:outline-none focus:ring-1 focus:ring-nativ-gold"
           />
 
           {error && (
-            <p className="mt-3 text-sm text-red-600 text-center">{error}</p>
+            <p className="mt-3 text-center text-sm text-red-600">{error}</p>
           )}
 
           <button
             type="submit"
             disabled={loading || password.length === 0}
-            className="mt-4 w-full rounded-lg bg-primary px-4 py-2.5 text-white font-semibold hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="mt-4 w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white transition-colors hover:bg-nativ-gold-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
             {loading ? "..." : "כניסה"}
           </button>

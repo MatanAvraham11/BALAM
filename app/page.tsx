@@ -73,7 +73,7 @@ export default function Home() {
               height={240}
               priority
               draggable={false}
-              className="pointer-events-none h-20 w-auto shrink-0 object-contain object-left mix-blend-multiply sm:h-24"
+              className="pointer-events-none h-20 w-auto max-w-[min(100%,280px)] shrink-0 object-contain object-left sm:h-24 sm:max-w-[min(100%,320px)]"
             />
             <div dir="rtl" className="min-w-0 shrink pl-2 text-right sm:pl-4">
               <h1 className="text-xl font-extrabold leading-tight tracking-tight text-nativ-dark sm:text-2xl">
