@@ -53,34 +53,36 @@ export default function Home() {
   return (
     <div className="flex min-h-screen flex-col items-center">
       <header className="w-full border-b border-gray-200 bg-white/60">
-        <button
-          type="button"
-          dir="ltr"
-          onClick={() => setView("dashboard")}
-          className="flex w-full items-center justify-between px-8 py-6 text-start outline-none transition-colors hover:bg-nativ-gold/5 focus-visible:ring-2 focus-visible:ring-nativ-gold/50 focus-visible:ring-inset"
-        >
-          <Image
-            src="/branding/nativ-logo.png"
-            alt="Nativ"
-            width={480}
-            height={160}
-            priority
-            className="h-14 w-auto max-h-16 shrink-0 object-contain object-left sm:h-16"
-          />
-          <div dir="rtl" className="min-w-0 shrink pl-4 text-right">
-            <h1 className="text-xl font-extrabold leading-tight tracking-tight text-nativ-dark sm:text-2xl">
-              Nativ
-              <span className="mx-1.5 text-nativ-gold sm:mx-2">|</span>
-              <span className="text-nativ-gold">נתיב</span>
-            </h1>
-            <p className="mt-0.5 max-w-md text-xs leading-snug text-nativ-dark/70 sm:text-sm">
-              חילוץ נתונים חכם ממסמכי רכש ושרטוטים הנדסיים
-            </p>
-          </div>
-        </button>
+        <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-4 py-6 sm:px-6 lg:px-8">
+          <button
+            type="button"
+            dir="ltr"
+            onClick={() => setView("dashboard")}
+            className="flex w-full items-center justify-between gap-4 text-start outline-none transition-colors hover:opacity-90 focus-visible:rounded-md focus-visible:ring-2 focus-visible:ring-nativ-gold/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white/60"
+          >
+            <Image
+              src="/branding/nativ-logo.png"
+              alt="Nativ"
+              width={720}
+              height={240}
+              priority
+              className="h-20 w-auto shrink-0 object-contain object-left mix-blend-multiply sm:h-24"
+            />
+            <div dir="rtl" className="min-w-0 shrink pl-2 text-right sm:pl-4">
+              <h1 className="text-xl font-extrabold leading-tight tracking-tight text-nativ-dark sm:text-2xl">
+                Nativ
+                <span className="mx-1.5 text-nativ-gold sm:mx-2">|</span>
+                <span className="text-nativ-gold">נתיב</span>
+              </h1>
+              <p className="mt-0.5 max-w-md text-xs leading-snug text-nativ-dark/70 sm:text-sm">
+                חילוץ נתונים חכם ממסמכי רכש ושרטוטים הנדסיים
+              </p>
+            </div>
+          </button>
+        </div>
       </header>
 
-      <main className="mx-auto w-full max-w-5xl px-4 pt-4 pb-16">
+      <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-4 sm:px-6 lg:px-8">
         {view === "dashboard" && (
           <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {PRODUCTS.map((p) => (
