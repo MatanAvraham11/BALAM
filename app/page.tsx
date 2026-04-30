@@ -57,26 +57,26 @@ export default function Home() {
           type="button"
           dir="ltr"
           onClick={() => setView("dashboard")}
-          className="flex w-full flex-row items-center gap-6 rounded-lg text-start outline-none focus-visible:ring-2 focus-visible:ring-nativ-gold/50"
+          className="flex w-full flex-row items-center justify-between gap-4 rounded-lg text-start outline-none focus-visible:ring-2 focus-visible:ring-nativ-gold/50"
         >
           <Image
             src="/branding/nativ-logo.png"
             alt="Nativ"
-            width={360}
-            height={120}
+            width={1080}
+            height={360}
             priority
-            className="h-24 w-auto shrink-0 max-w-[min(100%,320px)] object-contain sm:h-28 sm:max-w-[380px]"
+            className="h-72 w-auto shrink-0 object-contain object-left sm:h-[21rem]"
           />
           <div
             dir="rtl"
-            className="min-w-0 flex flex-1 flex-col items-end gap-1 text-right"
+            className="flex min-w-0 flex-1 flex-col items-end gap-0.5 text-right"
           >
-            <h1 className="text-3xl font-extrabold tracking-tight text-nativ-dark sm:text-4xl">
+            <h1 className="text-[1.41rem] font-extrabold leading-tight tracking-tight text-nativ-dark sm:text-[1.69rem]">
               Nativ
-              <span className="mx-2 text-nativ-gold">|</span>
+              <span className="mx-1.5 text-nativ-gold sm:mx-2">|</span>
               <span className="text-nativ-gold">נתיב</span>
             </h1>
-            <p className="text-sm text-nativ-dark/70">
+            <p className="max-w-md text-[0.65625rem] leading-snug text-nativ-dark/70 sm:text-[0.7rem]">
               חילוץ נתונים חכם ממסמכי רכש ושרטוטים הנדסיים
             </p>
           </div>
