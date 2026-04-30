@@ -63,6 +63,15 @@ export default function BalamTab() {
     downloadBase64(data.csv_base64, data.csv_filename, "text/csv");
   }
 
+  function handleNewRun() {
+    setFile(null);
+    setData(null);
+    setError(null);
+    setSuccess(null);
+  }
+
+  const showNewRun = Boolean(file || data || error || success);
+
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-gray-700">
@@ -75,6 +84,17 @@ export default function BalamTab() {
         file={file}
         onFile={setFile}
         disabled={loading}
+        belowDropzone={
+          showNewRun ? (
+            <button
+              type="button"
+              onClick={handleNewRun}
+              className="w-full rounded-lg border border-nativ-dark/20 bg-white px-4 py-2.5 font-semibold text-nativ-dark shadow-sm transition-colors hover:bg-gray-50"
+            >
+              להרצה חדשה
+            </button>
+          ) : null
+        }
       />
 
       {file && (
@@ -120,18 +140,6 @@ export default function BalamTab() {
             הורד כ-Excel / CSV
           </button>
           <DataTable columns={COLUMNS} rows={data.aggregated_rows} />
-
-          <button
-            onClick={() => {
-              setFile(null);
-              setData(null);
-              setError(null);
-              setSuccess(null);
-            }}
-            className="w-full rounded-lg border border-nativ-dark/20 bg-white px-4 py-2.5 font-semibold text-nativ-dark shadow-sm transition-colors hover:bg-gray-50"
-          >
-            להרצה חדשה
-          </button>
         </>
       )}
     </div>

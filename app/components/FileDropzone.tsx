@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useDropzone } from "react-dropzone";
 
 type Props = {
@@ -7,9 +8,17 @@ type Props = {
   file: File | null;
   onFile: (f: File | null) => void;
   disabled?: boolean;
+  /** Rendered directly under the dashed drop zone, above the security notice */
+  belowDropzone?: ReactNode;
 };
 
-export default function FileDropzone({ label, file, onFile, disabled }: Props) {
+export default function FileDropzone({
+  label,
+  file,
+  onFile,
+  disabled,
+  belowDropzone,
+}: Props) {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { "application/pdf": [".pdf"] },
     multiple: false,
@@ -39,6 +48,8 @@ export default function FileDropzone({ label, file, onFile, disabled }: Props) {
           <p className="mt-2 text-xs text-gray-500">PDF בלבד</p>
         )}
       </div>
+
+      {belowDropzone}
 
       <div className="flex items-start gap-2 rounded-lg border border-nativ-gold/20 bg-nativ-gold/5 px-4 py-3 text-sm text-nativ-dark/80">
         <svg

@@ -89,6 +89,15 @@ export default function DrawingTab() {
     );
   }
 
+  function handleNewRun() {
+    setFile(null);
+    setData(null);
+    setError(null);
+    setSuccess(null);
+  }
+
+  const showNewRun = Boolean(file || data || error || success);
+
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-gray-700">
@@ -101,6 +110,17 @@ export default function DrawingTab() {
         file={file}
         onFile={setFile}
         disabled={loading}
+        belowDropzone={
+          showNewRun ? (
+            <button
+              type="button"
+              onClick={handleNewRun}
+              className="w-full rounded-lg border border-nativ-dark/20 bg-white px-4 py-2.5 font-semibold text-nativ-dark shadow-sm transition-colors hover:bg-gray-50"
+            >
+              להרצה חדשה
+            </button>
+          ) : null
+        }
       />
 
       {file && (
@@ -129,7 +149,7 @@ export default function DrawingTab() {
 
       {data && (
         <>
-          <div className="text-base font-bold text-gray-900 mt-2">
+          <div className="text-base font-bold text-nativ-dark mt-2">
             טבלת מידות
           </div>
           <button
@@ -140,7 +160,7 @@ export default function DrawingTab() {
           </button>
           <DataTable columns={COLUMNS} rows={rows} />
 
-          <div className="text-base font-bold text-gray-900 mt-2">
+          <div className="text-base font-bold text-nativ-dark mt-2">
             שרטוט ממוספר
           </div>
           {pdfDataUrl && (
@@ -156,18 +176,6 @@ export default function DrawingTab() {
             className="w-full rounded-lg border border-nativ-gold/30 bg-white px-4 py-2.5 font-semibold text-nativ-gold shadow-sm transition-colors hover:bg-nativ-gold/5"
           >
             הורד שרטוט ממוספר (PDF)
-          </button>
-
-          <button
-            onClick={() => {
-              setFile(null);
-              setData(null);
-              setError(null);
-              setSuccess(null);
-            }}
-            className="w-full rounded-lg border border-nativ-dark/20 bg-white px-4 py-2.5 font-semibold text-nativ-dark shadow-sm transition-colors hover:bg-gray-50"
-          >
-            להרצה חדשה
           </button>
         </>
       )}
