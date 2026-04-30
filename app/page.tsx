@@ -52,40 +52,35 @@ export default function Home() {
 
   return (
     <div className="flex min-h-screen flex-col items-center">
-      <header className="mx-auto w-full max-w-5xl px-4 pt-10 pb-4">
+      <header className="w-full border-b border-gray-200 bg-white/60">
         <button
           type="button"
           dir="ltr"
           onClick={() => setView("dashboard")}
-          className="flex w-full flex-row items-center justify-between gap-4 rounded-lg text-start outline-none focus-visible:ring-2 focus-visible:ring-nativ-gold/50"
+          className="flex w-full items-center justify-between px-8 py-6 text-start outline-none transition-colors hover:bg-nativ-gold/5 focus-visible:ring-2 focus-visible:ring-nativ-gold/50 focus-visible:ring-inset"
         >
           <Image
             src="/branding/nativ-logo.png"
             alt="Nativ"
-            width={1080}
-            height={360}
+            width={480}
+            height={160}
             priority
-            className="h-72 w-auto shrink-0 object-contain object-left sm:h-[21rem]"
+            className="h-14 w-auto max-h-16 shrink-0 object-contain object-left sm:h-16"
           />
-          <div
-            dir="rtl"
-            className="flex min-w-0 flex-1 flex-col items-end gap-0.5 text-right"
-          >
-            <h1 className="text-[1.41rem] font-extrabold leading-tight tracking-tight text-nativ-dark sm:text-[1.69rem]">
+          <div dir="rtl" className="min-w-0 shrink pl-4 text-right">
+            <h1 className="text-xl font-extrabold leading-tight tracking-tight text-nativ-dark sm:text-2xl">
               Nativ
               <span className="mx-1.5 text-nativ-gold sm:mx-2">|</span>
               <span className="text-nativ-gold">נתיב</span>
             </h1>
-            <p className="max-w-md text-[0.65625rem] leading-snug text-nativ-dark/70 sm:text-[0.7rem]">
+            <p className="mt-0.5 max-w-md text-xs leading-snug text-nativ-dark/70 sm:text-sm">
               חילוץ נתונים חכם ממסמכי רכש ושרטוטים הנדסיים
             </p>
           </div>
         </button>
       </header>
 
-      <hr className="w-full max-w-5xl border-t border-gray-200" />
-
-      <main className="mx-auto w-full max-w-5xl px-4 pt-6 pb-16">
+      <main className="mx-auto w-full max-w-5xl px-4 pt-4 pb-16">
         {view === "dashboard" && (
           <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {PRODUCTS.map((p) => (
