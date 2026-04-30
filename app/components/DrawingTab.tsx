@@ -96,7 +96,7 @@ export default function DrawingTab() {
     setSuccess(null);
   }
 
-  const showNewRun = Boolean(file || data || error || success);
+  const showNewRun = Boolean(data || error || success);
 
   return (
     <div className="flex flex-col gap-4">
