@@ -1,13 +1,14 @@
 "use client";
 
-import { useState } from "react";
-
 type Props = {
   title: string;
   description?: string;
   locked?: boolean;
   onEnter?: () => void;
 };
+
+/** Same height as primary CTA row so locked cards align with unlocked footers */
+const FOOTER_ROW_CLASS = "flex min-h-[44px] w-full shrink-0 items-center justify-center";
 
 function LockIcon({ className }: { className?: string }) {
   return (
@@ -33,43 +34,37 @@ export default function ProductCard({
   locked,
   onEnter,
 }: Props) {
-  const [expanded, setExpanded] = useState(false);
-
   if (locked) {
     return (
-      <div className="relative flex flex-col items-center justify-center gap-3 rounded-xl border border-gray-200 bg-white/60 p-6 text-center shadow-sm backdrop-blur-sm select-none">
-        <LockIcon className="h-8 w-8 text-gray-300" />
-        <h3 className="text-base font-bold text-nativ-dark/50">{title}</h3>
-        <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-400">
-          בפיתוח
-        </span>
+      <div className="flex h-full min-h-[280px] select-none flex-col rounded-xl border border-gray-200 bg-white/60 p-6 text-center shadow-sm backdrop-blur-sm">
+        <h3 className="shrink-0 text-lg font-bold text-nativ-dark/50">{title}</h3>
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 py-4">
+          <LockIcon className="h-8 w-8 text-gray-300" />
+        </div>
+        <div className={FOOTER_ROW_CLASS}>
+          <span className="rounded-full bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-400">
+            בפיתוח
+          </span>
+        </div>
       </div>
     );
   }
 
   return (
-    <div
-      onClick={() => setExpanded((v) => !v)}
-      className="flex cursor-pointer flex-col gap-3 rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-all hover:shadow-md hover:border-nativ-gold/40"
-    >
-      <h3 className="text-lg font-bold text-nativ-dark">{title}</h3>
-
-      {expanded && (
-        <>
-          <p className="text-sm leading-relaxed text-nativ-dark/70">
-            {description}
-          </p>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onEnter?.();
-            }}
-            className="mt-1 w-full rounded-lg bg-nativ-gold px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
-          >
-            כניסה למוצר
-          </button>
-        </>
-      )}
+    <div className="flex h-full min-h-[280px] flex-col rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:border-nativ-gold/40 hover:shadow-md">
+      <h3 className="shrink-0 text-lg font-bold text-nativ-dark">{title}</h3>
+      <p className="mt-3 min-h-0 flex-1 text-sm leading-relaxed text-nativ-dark/70">
+        {description}
+      </p>
+      <div className={FOOTER_ROW_CLASS}>
+        <button
+          type="button"
+          onClick={() => onEnter?.()}
+          className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
+        >
+          כניסה למוצר
+        </button>
+      </div>
     </div>
   );
 }
