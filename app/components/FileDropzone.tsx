@@ -25,14 +25,14 @@ export default function FileDropzone({ label, file, onFile, disabled }: Props) {
         {...getRootProps()}
         className={`w-full rounded-xl border-2 border-dashed px-5 py-8 cursor-pointer bg-white text-center shadow-sm transition-colors ${
           isDragActive
-            ? "border-blue-600 bg-blue-50"
-            : "border-gray-200 hover:border-blue-400 hover:bg-blue-50"
+            ? "border-nativ-gold bg-nativ-gold/5"
+            : "border-gray-200 hover:border-nativ-gold/50 hover:bg-nativ-gold/5"
         } ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
       >
         <input {...getInputProps()} />
         <p className="text-sm font-semibold text-gray-900">{label}</p>
         {file ? (
-          <p className="mt-2 text-xs text-blue-600">
+          <p className="mt-2 text-xs text-nativ-gold">
             נבחר: <span className="font-semibold">{file.name}</span>
           </p>
         ) : (
@@ -40,11 +40,11 @@ export default function FileDropzone({ label, file, onFile, disabled }: Props) {
         )}
       </div>
 
-      <div className="flex items-start gap-2 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+      <div className="flex items-start gap-2 rounded-lg border border-nativ-gold/20 bg-nativ-gold/5 px-4 py-3 text-sm text-nativ-dark/80">
         <svg
           aria-hidden="true"
           viewBox="0 0 24 24"
-          className="mt-0.5 h-5 w-5 shrink-0 text-blue-600"
+          className="mt-0.5 h-5 w-5 shrink-0 text-nativ-gold"
           fill="none"
           stroke="currentColor"
           strokeLinecap="round"

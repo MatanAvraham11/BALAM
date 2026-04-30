@@ -1,12 +1,20 @@
 @import "tailwindcss";
 
 @theme inline {
-  --color-primary: #2563eb;
-  --color-primary-hover: #1d4ed8;
+  --color-nativ-gold: #bd9969;
+  --color-nativ-gold-hover: #a78656;
+  --color-nativ-dark: #323233;
+  --color-nativ-light: #f2f0ef;
+
+  --color-primary: var(--color-nativ-gold);
+  --color-primary-hover: var(--color-nativ-gold-hover);
+
   --font-sans: var(--font-heebo), ui-sans-serif, system-ui, sans-serif;
 }
 
 body {
   direction: rtl;
   text-align: right;
+  background-color: var(--color-nativ-light);
+  color: var(--color-nativ-dark);
 }

@@ -81,7 +81,7 @@ export default function BalamTab() {
         <button
           onClick={handleExtract}
           disabled={loading}
-          className="w-full rounded-lg bg-blue-600 px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover disabled:cursor-not-allowed disabled:opacity-60"
         >
           {loading ? "מעבד קובץ..." : "חלץ נתונים"}
         </button>
@@ -110,16 +110,28 @@ export default function BalamTab() {
             ]}
           />
 
-          <div className="text-base font-bold text-gray-900 mt-2">
+          <div className="text-base font-bold text-nativ-dark mt-2">
             נתוני הפריטים
           </div>
           <button
             onClick={handleDownloadCsv}
-            className="w-full rounded-lg bg-blue-600 px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
+            className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
           >
             הורד כ-Excel / CSV
           </button>
           <DataTable columns={COLUMNS} rows={data.aggregated_rows} />
+
+          <button
+            onClick={() => {
+              setFile(null);
+              setData(null);
+              setError(null);
+              setSuccess(null);
+            }}
+            className="w-full rounded-lg border border-nativ-dark/20 bg-white px-4 py-2.5 font-semibold text-nativ-dark shadow-sm transition-colors hover:bg-gray-50"
+          >
+            להרצה חדשה
+          </button>
         </>
       )}
     </div>

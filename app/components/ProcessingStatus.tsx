@@ -21,7 +21,7 @@ export default function ProcessingStatus() {
   }, []);
 
   return (
-    <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700">
+    <div className="rounded-lg border border-nativ-gold/20 bg-nativ-gold/5 px-4 py-3 text-sm font-semibold text-nativ-dark/80">
       {STATUSES[index]}
     </div>
   );

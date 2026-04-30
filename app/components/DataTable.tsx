@@ -9,7 +9,7 @@ export default function DataTable({ columns, rows }: Props) {
   return (
     <div className="w-full overflow-x-auto rounded-lg border border-gray-200 bg-white shadow-sm">
       <table className="w-full text-sm">
-        <thead className="bg-blue-50 text-gray-700">
+        <thead className="bg-nativ-gold/5 text-nativ-dark">
           <tr>
             {columns.map((c) => (
               <th

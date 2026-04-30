@@ -25,8 +25,8 @@ export default function Tabs({ tabs }: { tabs: Tab[] }) {
               onClick={() => setActive(t.id)}
               className={`flex-1 rounded-lg px-5 py-2.5 text-sm font-semibold transition-colors ${
                 isActive
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-gray-600 hover:bg-blue-50 hover:text-blue-600"
+                  ? "bg-nativ-gold text-white shadow-sm"
+                  : "text-gray-600 hover:bg-nativ-gold/10 hover:text-nativ-gold"
               }`}
             >
               {t.label}
