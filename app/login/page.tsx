@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
@@ -36,13 +35,11 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen flex-col items-center bg-nativ-light text-nativ-dark">
       <header className="w-full max-w-md px-4 pt-8 pb-2 text-center sm:px-6">
-        <Image
-          src="/branding/nativ-logo.svg"
-          alt="Nativ"
-          width={480}
-          height={160}
-          priority
-          className="mx-auto h-12 w-auto max-w-full object-contain sm:h-12"
+        <img
+          src="/light.logo"
+          alt="Nativ Logo"
+          fetchPriority="high"
+          className="mx-auto h-12 w-auto max-w-full object-contain sm:h-14"
         />
         <p className="mt-3 text-xs leading-snug text-nativ-dark/70 sm:text-sm">
           מערכות ואוטומציות למפעלים

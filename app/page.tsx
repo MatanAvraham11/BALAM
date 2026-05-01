@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useState } from "react";
 import ProductCard from "./components/ProductCard";
 import BalamTab from "./components/BalamTab";
@@ -66,14 +65,12 @@ export default function Home() {
             aria-label='Nativ נתיב — חזרה לעמוד הבית'
             className="flex w-full cursor-pointer items-center justify-between gap-4 text-start outline-none transition-colors hover:opacity-90 focus-visible:rounded-md focus-visible:ring-2 focus-visible:ring-nativ-gold/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white/60"
           >
-            <Image
-              src="/branding/nativ-logo.svg"
-              alt=""
-              width={720}
-              height={240}
-              priority
+            <img
+              src="/light.logo"
+              alt="Nativ Logo"
               draggable={false}
-              className="pointer-events-none h-12 w-auto shrink-0 object-contain object-left sm:h-12"
+              fetchPriority="high"
+              className="pointer-events-none h-12 w-auto shrink-0 object-contain object-left sm:h-14"
             />
             <div dir="rtl" className="min-w-0 shrink pl-2 text-right sm:pl-4">
               <h1 className="text-xl font-extrabold leading-tight tracking-tight text-nativ-dark sm:text-2xl">
