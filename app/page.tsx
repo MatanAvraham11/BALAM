@@ -66,7 +66,7 @@ export default function Home() {
             className="flex w-full cursor-pointer items-center justify-between gap-4 text-start outline-none transition-colors hover:opacity-90 focus-visible:rounded-md focus-visible:ring-2 focus-visible:ring-nativ-gold/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white/60"
           >
             <img
-              src="/branding/nativ-logo.png"
+              src="/branding/nativ-logo.svg"
               alt="Nativ Logo"
               draggable={false}
               fetchPriority="high"
