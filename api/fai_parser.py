@@ -56,6 +56,7 @@ CIRCLE_FILL_OPACITY = 0.3
 LABEL_COLOR = (0, 0, 0)
 LABEL_FONTSIZE = 7
 LABEL_MARGIN = 4.0
+_BALLOON_GAP = 2.0  # extra clearance between balloons (PDF pt)
 
 # Title-block exclusion zone (fraction of page dimensions)
 _TITLE_BLOCK_X_FRAC = 0.62
@@ -455,14 +456,16 @@ def _rects_overlap(
 def _place_balloon_center(
     item_bbox: tuple[float, float, float, float],
     all_text_bboxes: list[tuple[float, float, float, float]],
+    placed_centers: list[tuple[float, float]],
     pw: float,
     ph: float,
 ) -> tuple[float, float]:
-    """Find a balloon centre that does not overlap any text bbox on the page."""
+    """Find a balloon centre that overlaps neither text nor existing balloons."""
     x0, y0, x1, y1 = item_bbox
     mcx = (x0 + x1) / 2
     mcy = (y0 + y1) / 2
     eff = CIRCLE_RADIUS + 2.0
+    balloon_dist = 2 * CIRCLE_RADIUS + _BALLOON_GAP
     base = max((x1 - x0) * 0.5 + CIRCLE_RADIUS + 6, 18.0)
 
     best: tuple[float, float] | None = None
@@ -489,6 +492,11 @@ def _place_balloon_center(
             if _rects_overlap(cb, item_bbox):
                 hit = True
 
+            for px, py in placed_centers:
+                if math.hypot(cx - px, cy - py) < balloon_dist:
+                    hit = True
+                    total_inter += balloon_dist * balloon_dist
+
             if not hit:
                 return (cx, cy)
 
@@ -501,25 +509,54 @@ def _place_balloon_center(
     return best if best is not None else (max(eff, mcx + base), max(eff, mcy - base))
 
 
+def _nudge_note_center(
+    cx: float,
+    cy: float,
+    placed: list[tuple[float, float]],
+    pw: float,
+    ph: float,
+) -> tuple[float, float]:
+    """Shift a Note balloon vertically until it no longer collides with placed ones."""
+    eff = CIRCLE_RADIUS + 2.0
+    step = 2 * CIRCLE_RADIUS + _BALLOON_GAP
+    balloon_dist = 2 * CIRCLE_RADIUS + _BALLOON_GAP
+
+    for _ in range(40):
+        collides = any(math.hypot(cx - px, cy - py) < balloon_dist for px, py in placed)
+        if not collides:
+            return (cx, cy)
+        cy -= step
+        cy = max(eff, min(ph - eff, cy))
+
+    return (cx, cy)
+
+
 def _annotate_pdf(
     doc: fitz.Document,
     items: list[FAIItem],
     page_text_bboxes: list[list[tuple[float, float, float, float]]],
 ) -> bytes:
+    placed_by_page: dict[int, list[tuple[float, float]]] = {}
+
     for item in items:
         if item.page_index >= len(doc):
             continue
         page = doc[item.page_index]
         pw, ph = page.rect.width, page.rect.height
         bboxes = page_text_bboxes[item.page_index] if item.page_index < len(page_text_bboxes) else []
+        placed = placed_by_page.setdefault(item.page_index, [])
+
         if item.dimension_type == "Note":
             cx = item.bbox[0] - _NOTE_BALLOON_OFFSET_X
             cy = (item.bbox[1] + item.bbox[3]) / 2
             eff = CIRCLE_RADIUS + 2.0
             cx = max(eff, min(pw - eff, cx))
             cy = max(eff, min(ph - eff, cy))
+            cx, cy = _nudge_note_center(cx, cy, placed, pw, ph)
         else:
-            cx, cy = _place_balloon_center(item.bbox, bboxes, pw, ph)
+            cx, cy = _place_balloon_center(item.bbox, bboxes, placed, pw, ph)
+
+        placed.append((cx, cy))
 
         shape = page.new_shape()
         shape.draw_circle(fitz.Point(cx, cy), CIRCLE_RADIUS)
