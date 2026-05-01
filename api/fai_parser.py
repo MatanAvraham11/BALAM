@@ -123,9 +123,12 @@ _RE_TOL_HEADER = re.compile(
 
 _RE_GENTOL_LABEL = re.compile(r"^X(?:\.X{1,3})?$")
 _RE_GENTOL_ANGLE = re.compile(r"^ANGLES?$", re.I)
-_RE_GENTOL_VALUE = re.compile(r"^\d+(?:[.,]\d+)?$")
+_RE_GENTOL_VALUE = re.compile(r"^\s*[±]?\s*\d+(?:[.,]\d+)?\s*$")
+_RE_GENTOL_NUM = re.compile(r"(\d+(?:[.,]\d+)?)")
 
-_GENTOL_ROW_Y_THRESH = 4.0
+_GENTOL_ROW_Y_THRESH = 5.0
+_GENTOL_X_LEFT = 60.0   # max pt left of header x0 for label/value spans
+_GENTOL_X_RIGHT = 200.0  # max pt right of header x0 for value spans
 
 
 # ---------------------------------------------------------------------------
@@ -182,25 +185,41 @@ def _is_in_title_block(sp: _Span, pw: float, ph: float) -> bool:
     return cx >= pw * _TITLE_BLOCK_X_FRAC and cy >= ph * _TITLE_BLOCK_Y_FRAC
 
 
-def _tolerance_block_y(
-    spans: list[_Span], page_index: int,
-) -> float | None:
-    """Return the top-Y of the GENERAL TOLERANCES header on this page, if any."""
-    ys = [
-        sp.bbox[1]
-        for sp in spans
-        if sp.page_index == page_index and _RE_TOL_HEADER.search(sp.text)
-    ]
-    return min(ys) if ys else None
+def _find_tol_header(
+    spans: list[_Span], page_index: int, ph: float,
+) -> tuple[float, float] | None:
+    """Return (x0, y) of the GENERAL TOLERANCES header on this page.
+
+    Prefers a header in the lower half of the page (title-block region).
+    Returns None if no header found.
+    """
+    best: tuple[float, float] | None = None
+    for sp in spans:
+        if sp.page_index != page_index:
+            continue
+        if not _RE_TOL_HEADER.search(sp.text):
+            continue
+        if best is None or sp.bbox[1] > 0.5 * ph:
+            best = (sp.bbox[0], sp.bbox[1])
+    return best
 
 
 def _is_in_tolerance_block(
-    sp: _Span, tol_y: float | None, pw: float,
+    sp: _Span, tol_hdr: tuple[float, float] | None,
 ) -> bool:
-    if tol_y is None:
+    """Check whether a span falls inside the GENERAL TOLERANCES region.
+
+    Uses the header (x0, y) as anchor: spans must be below the header and
+    within a horizontal band around the header's x position.
+    """
+    if tol_hdr is None:
         return False
-    cx = (sp.bbox[0] + sp.bbox[2]) / 2
-    return sp.bbox[1] >= tol_y and 0.40 * pw <= cx <= 0.62 * pw
+    hdr_x0, hdr_y = tol_hdr
+    return (
+        sp.bbox[1] >= hdr_y
+        and sp.bbox[0] >= hdr_x0 - _GENTOL_X_LEFT
+        and sp.bbox[0] <= hdr_x0 + _GENTOL_X_RIGHT
+    )
 
 
 def _filter_spans(
@@ -219,8 +238,7 @@ def _filter_spans(
 def _parse_general_tolerances(
     raw_spans: list[_Span],
     page_index: int,
-    tol_y: float | None,
-    pw: float,
+    tol_hdr: tuple[float, float] | None,
 ) -> list[FAIItem]:
     """Extract tolerance values from the GENERAL TOLERANCES block.
 
@@ -229,12 +247,12 @@ def _parse_general_tolerances(
     its right, produces a single FAIItem on the value span.  Rows with a
     label but no numeric value (e.g. bare "X") are skipped.
     """
-    if tol_y is None:
+    if tol_hdr is None:
         return []
 
     block_spans = [
         sp for sp in raw_spans
-        if sp.page_index == page_index and _is_in_tolerance_block(sp, tol_y, pw)
+        if sp.page_index == page_index and _is_in_tolerance_block(sp, tol_hdr)
     ]
     if not block_spans:
         return []
@@ -273,8 +291,9 @@ def _parse_general_tolerances(
             if sp.bbox[0] < label_x2:
                 continue
             if _RE_GENTOL_VALUE.match(sp.text):
+                m = _RE_GENTOL_NUM.search(sp.text)
                 items.append(FAIItem(
-                    text=sp.text.strip(),
+                    text=m.group(1) if m else sp.text.strip(),
                     dimension_type="GeneralTolerance",
                     tolerance="",
                     page_index=page_index,
@@ -568,9 +587,9 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
         page_text_bboxes.append([sp.bbox for sp in raw_spans])
         spans = _filter_spans(raw_spans, pw, ph)
 
-        tol_y = _tolerance_block_y(raw_spans, page_idx)
-        tol_items = _parse_general_tolerances(raw_spans, page_idx, tol_y, pw)
-        spans = [sp for sp in spans if not _is_in_tolerance_block(sp, tol_y, pw)]
+        tol_hdr = _find_tol_header(raw_spans, page_idx, ph)
+        tol_items = _parse_general_tolerances(raw_spans, page_idx, tol_hdr)
+        spans = [sp for sp in spans if not _is_in_tolerance_block(sp, tol_hdr)]
 
         notes = _parse_notes(spans, page_idx)
         note_bboxes = {n.bbox for n in notes}
