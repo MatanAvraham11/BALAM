@@ -67,13 +67,13 @@ export default function Home() {
             className="flex w-full cursor-pointer items-center justify-between gap-4 text-start outline-none transition-colors hover:opacity-90 focus-visible:rounded-md focus-visible:ring-2 focus-visible:ring-nativ-gold/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white/60"
           >
             <Image
-              src="/branding/nativ-logo.png"
+              src="/branding/nativ-logo.svg"
               alt=""
               width={720}
               height={240}
               priority
               draggable={false}
-              className="pointer-events-none h-20 w-auto max-w-[min(100%,280px)] shrink-0 object-contain object-left sm:h-24 sm:max-w-[min(100%,320px)]"
+              className="pointer-events-none h-12 w-auto shrink-0 object-contain object-left sm:h-12"
             />
             <div dir="rtl" className="min-w-0 shrink pl-2 text-right sm:pl-4">
               <h1 className="text-xl font-extrabold leading-tight tracking-tight text-nativ-dark sm:text-2xl">
@@ -82,7 +82,7 @@ export default function Home() {
                 <span className="text-nativ-gold">נתיב</span>
               </h1>
               <p className="mt-0.5 max-w-md text-xs leading-snug text-nativ-dark/70 sm:text-sm">
-                חילוץ נתונים חכם ממסמכי רכש ושרטוטים הנדסיים
+                מערכות ואוטומציות למפעלים
               </p>
             </div>
           </button>

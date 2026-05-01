@@ -9,7 +9,7 @@ const heebo = Heebo({
 
 export const metadata: Metadata = {
   title: "נתיב | Nativ",
-  description: "חילוץ נתונים חכם ממסמכי רכש ושרטוטים הנדסיים",
+  description: "מערכות ואוטומציות למפעלים",
 };
 
 export default function RootLayout({
