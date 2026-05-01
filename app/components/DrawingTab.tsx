@@ -9,7 +9,13 @@ import { downloadBase64 } from "../lib/download";
 type FAIItem = {
   balloon_number: number;
   text: string;
-  dimension_type: string;
+  dimension_type:
+    | "Radius"
+    | "Diameter"
+    | "Angle"
+    | "Linear"
+    | "Note"
+    | "Tolerances";
   tolerance: string;
 };
 

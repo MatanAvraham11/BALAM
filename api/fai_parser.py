@@ -6,9 +6,14 @@ Pipeline (pure PyMuPDF + stdlib, no LLM):
 2. Filter out border grid labels and title-block text.
 3. Detect dimensions via regex (radius, diameter, angle, linear + tolerances).
 4. Detect numbered notes from the NOTES section.
-5. Classify each item and assign balloon numbers (notes first, then clockwise).
-6. Draw semi-transparent balloons on the PDF.
-7. Export a 5-column Hebrew CSV.
+5. Detect TOLERANCES / UNLESS OTHERWISE SPECIFIED block.
+6. Cluster all targets spatially (Euclidean threshold).
+7. Sort clusters clockwise (global centroid), then items within each cluster
+   clockwise (local centroid) — starting from 12-o'clock.
+8. Assign sequential balloon numbers after the combined sort.
+9. Place balloons with fixed offsets (left / right fallback); snap notes
+   to a single vertical axis.
+10. Export a 5-column Hebrew CSV.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from pydantic import BaseModel, Field
 # Data models
 # ---------------------------------------------------------------------------
 
-DimensionType = Literal["Radius", "Diameter", "Angle", "Linear", "Note"]
+DimensionType = Literal["Radius", "Diameter", "Angle", "Linear", "Note", "Tolerances"]
 
 
 class FAIItem(BaseModel):
@@ -57,12 +62,19 @@ LABEL_COLOR = (0, 0, 0)
 LABEL_FONTSIZE = 7
 LABEL_MARGIN = 4.0
 
-# Title-block exclusion zone (fraction of page dimensions)
 _TITLE_BLOCK_X_FRAC = 0.62
 _TITLE_BLOCK_Y_FRAC = 0.72
-
-# Border margin for grid-label filtering (fraction of page dimensions)
 _BORDER_MARGIN_FRAC = 0.03
+
+BALLOON_OFFSET = 20.0
+PAGE_EDGE_MARGIN = 30.0
+
+# Spatial clustering distance threshold (PDF user-space units ≈ points)
+CLUSTER_DIST = 80.0
+
+# Maximum Y gap between consecutive note bullets before we stop collecting
+NOTE_BREAK_Y = 60.0
+
 
 # ---------------------------------------------------------------------------
 # Regex patterns
@@ -76,14 +88,13 @@ _RE_RADIUS = re.compile(r"R\s*\d+(?:[.,]\d+)?", re.I)
 _RE_DIAMETER = re.compile(r"(?:[⌀Øø]|DIA\.?)\s*\d+(?:[.,]\d+)?", re.I)
 _RE_ANGLE = re.compile(r"\d+(?:[.,]\d+)?\s*°")
 _RE_DIM_NUMBER = re.compile(r"\d+(?:[.,]\d+)")
-_RE_NOTES_HEADER = re.compile(r"^\s*NOTES?\s*:?\s*$", re.I)
+_RE_NOTES_HEADER = re.compile(r"^\s*NOTES?\s*[:.\-]?\s*$", re.I)
 _RE_NOTE_BULLET = re.compile(r"^\s*(\d+)\s*[.)]\s+")
 _RE_BORDER_LABEL = re.compile(r"^[A-Za-z0-9]$")
 _RE_THREAD = re.compile(
     r"(?:M\d|#\d|UNC|UNF|UNJC|UNJF|\d+[/-]\d+\s*UN)", re.I
 )
 
-# Patterns that look like real dimension text (not just any number)
 _RE_DIM_HINT = re.compile(
     r"("
     r"\d+[\d.,]*\s*[±+\-]|"
@@ -95,6 +106,11 @@ _RE_DIM_HINT = re.compile(
     r"\d+[\d.,]*\s*[xX]\s*\d+|"
     r"\d+[\d.,]{1,}\b"
     r")",
+    re.I,
+)
+
+_RE_TOLERANCES = re.compile(
+    r"\b(TOLERANCES?|UNLESS\s+OTHERWISE\s+SPECIFIED)\b",
     re.I,
 )
 
@@ -168,19 +184,27 @@ def _filter_spans(
 
 def _parse_notes(spans: list[_Span], page_index: int) -> list[FAIItem]:
     """Find the NOTES header on the given page and collect numbered bullets."""
-    header_found = False
+    header_bbox: tuple[float, float, float, float] | None = None
     for sp in spans:
         if sp.page_index == page_index and _RE_NOTES_HEADER.match(sp.text):
-            header_found = True
+            header_bbox = sp.bbox
             break
-    if not header_found:
+    if header_bbox is None:
         return []
 
-    page_spans = [sp for sp in spans if sp.page_index == page_index]
-    page_spans.sort(key=lambda s: (s.bbox[1], s.bbox[0]))
+    page_spans = sorted(
+        [sp for sp in spans if sp.page_index == page_index],
+        key=lambda s: (s.bbox[1], s.bbox[0]),
+    )
 
     notes: list[FAIItem] = []
+    prev_y1 = header_bbox[3]
+
     for sp in page_spans:
+        if sp.bbox[1] < header_bbox[3]:
+            continue
+        if sp.bbox[1] - prev_y1 > NOTE_BREAK_Y:
+            break
         m = _RE_NOTE_BULLET.match(sp.text)
         if m:
             notes.append(FAIItem(
@@ -190,7 +214,37 @@ def _parse_notes(spans: list[_Span], page_index: int) -> list[FAIItem]:
                 page_index=page_index,
                 bbox=sp.bbox,
             ))
+            prev_y1 = sp.bbox[3]
+
     return notes
+
+
+# ---------------------------------------------------------------------------
+# TOLERANCES parser
+# ---------------------------------------------------------------------------
+
+def _parse_tolerances(spans: list[_Span], page_index: int) -> list[FAIItem]:
+    """Find a TOLERANCES / UNLESS OTHERWISE SPECIFIED block on the page."""
+    matched: list[_Span] = []
+    for sp in spans:
+        if sp.page_index == page_index and _RE_TOLERANCES.search(sp.text):
+            matched.append(sp)
+
+    if not matched:
+        return []
+
+    x0 = min(sp.bbox[0] for sp in matched)
+    y0 = min(sp.bbox[1] for sp in matched)
+    x1 = max(sp.bbox[2] for sp in matched)
+    y1 = max(sp.bbox[3] for sp in matched)
+
+    return [FAIItem(
+        text="TOLERANCES",
+        dimension_type="Tolerances",
+        tolerance="",
+        page_index=page_index,
+        bbox=(x0, y0, x1, y1),
+    )]
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +252,6 @@ def _parse_notes(spans: list[_Span], page_index: int) -> list[FAIItem]:
 # ---------------------------------------------------------------------------
 
 def _extract_tolerance(text: str) -> tuple[str, str]:
-    """Return (nominal_text, tolerance_string). Strip tolerance from text."""
     m = _RE_TOLERANCE_PM.search(text)
     if m:
         tol = m.group(0).strip()
@@ -230,10 +283,13 @@ def _looks_like_dimension(text: str) -> bool:
     return bool(_RE_DIM_HINT.search(text))
 
 
-def _detect_dimensions(spans: list[_Span], note_bboxes: set[tuple[float, float, float, float]]) -> list[FAIItem]:
+def _detect_dimensions(
+    spans: list[_Span],
+    exclude_bboxes: set[tuple[float, float, float, float]],
+) -> list[FAIItem]:
     items: list[FAIItem] = []
     for sp in spans:
-        if sp.bbox in note_bboxes:
+        if sp.bbox in exclude_bboxes:
             continue
         if not _looks_like_dimension(sp.text):
             continue
@@ -252,43 +308,98 @@ def _detect_dimensions(spans: list[_Span], note_bboxes: set[tuple[float, float, 
 
 
 # ---------------------------------------------------------------------------
-# Numbering: notes first, then clockwise
+# Geometry helpers
 # ---------------------------------------------------------------------------
 
+def _centroid(bbox: tuple[float, float, float, float]) -> tuple[float, float]:
+    return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+
+
+def _euclid(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
 def _clockwise_angle(cx: float, cy: float, x: float, y: float) -> float:
-    """Angle from 12-o'clock position, increasing clockwise (0..2pi)."""
-    dx = x - cx
-    dy = y - cy
-    angle = math.atan2(dx, -dy)  # 0 = up, positive = clockwise
-    if angle < 0:
-        angle += 2 * math.pi
-    return angle
+    """Angle from 12-o'clock, increasing clockwise (0 .. 2*pi)."""
+    a = math.atan2(x - cx, -(y - cy))
+    return a + 2 * math.pi if a < 0 else a
+
+
+def _bbox_union(items: list[FAIItem]) -> tuple[float, float, float, float]:
+    x0 = min(it.bbox[0] for it in items)
+    y0 = min(it.bbox[1] for it in items)
+    x1 = max(it.bbox[2] for it in items)
+    y1 = max(it.bbox[3] for it in items)
+    return (x0, y0, x1, y1)
+
+
+# ---------------------------------------------------------------------------
+# Spatial clustering
+# ---------------------------------------------------------------------------
+
+def _cluster(targets: list[FAIItem]) -> list[list[FAIItem]]:
+    """Single-linkage clustering by Euclidean distance on bbox centroids."""
+    clusters: list[list[FAIItem]] = []
+    for t in targets:
+        c = _centroid(t.bbox)
+        joined = False
+        for cl in clusters:
+            if any(_euclid(c, _centroid(x.bbox)) <= CLUSTER_DIST for x in cl):
+                cl.append(t)
+                joined = True
+                break
+        if not joined:
+            clusters.append([t])
+    return clusters
+
+
+# ---------------------------------------------------------------------------
+# Clockwise sort (global clusters then local items)
+# ---------------------------------------------------------------------------
+
+def _sort_clockwise(items: list[FAIItem], cx: float, cy: float) -> list[FAIItem]:
+    return sorted(items, key=lambda it: _clockwise_angle(cx, cy, *_centroid(it.bbox)))
 
 
 def _assign_numbers(
-    notes: list[FAIItem],
-    dims: list[FAIItem],
+    all_targets: list[FAIItem],
     page_sizes: list[tuple[float, float]],
 ) -> list[FAIItem]:
-    notes_sorted = sorted(notes, key=lambda it: (it.page_index, it.bbox[1], it.bbox[0]))
+    """Cluster, sort clockwise globally then locally, assign sequential numbers."""
+    pages: dict[int, list[FAIItem]] = {}
+    for t in all_targets:
+        pages.setdefault(t.page_index, []).append(t)
 
-    def _sort_key(it: FAIItem) -> tuple[int, float]:
-        pw, ph = page_sizes[it.page_index] if it.page_index < len(page_sizes) else (1, 1)
-        cx_page, cy_page = pw / 2, ph / 2
-        ix = (it.bbox[0] + it.bbox[2]) / 2
-        iy = (it.bbox[1] + it.bbox[3]) / 2
-        return (it.page_index, _clockwise_angle(cx_page, cy_page, ix, iy))
+    ordered: list[FAIItem] = []
+    for pi in sorted(pages):
+        targets = pages[pi]
+        clusters = _cluster(targets)
 
-    dims_sorted = sorted(dims, key=_sort_key)
+        cluster_centroids = []
+        for cl in clusters:
+            xs = [_centroid(it.bbox)[0] for it in cl]
+            ys = [_centroid(it.bbox)[1] for it in cl]
+            cluster_centroids.append((sum(xs) / len(xs), sum(ys) / len(ys)))
 
-    combined = notes_sorted + dims_sorted
-    for i, item in enumerate(combined, start=1):
+        gcx = sum(c[0] for c in cluster_centroids) / len(cluster_centroids)
+        gcy = sum(c[1] for c in cluster_centroids) / len(cluster_centroids)
+
+        indexed = list(range(len(clusters)))
+        indexed.sort(key=lambda i: _clockwise_angle(gcx, gcy, *cluster_centroids[i]))
+
+        for i in indexed:
+            cl = clusters[i]
+            lcx, lcy = cluster_centroids[i]
+            ordered.extend(_sort_clockwise(cl, lcx, lcy))
+
+    for i, item in enumerate(ordered, start=1):
         item.balloon_number = i
-    return combined
+
+    return ordered
 
 
 # ---------------------------------------------------------------------------
-# Balloon annotation
+# Balloon annotation — deterministic fixed-offset placement
 # ---------------------------------------------------------------------------
 
 def _rects_overlap(
@@ -298,53 +409,40 @@ def _rects_overlap(
     return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
 
 
-def _place_balloon_center(
-    item_bbox: tuple[float, float, float, float],
-    all_text_bboxes: list[tuple[float, float, float, float]],
+def _balloon_center_offset(
+    item: FAIItem,
     pw: float,
-    ph: float,
+    _ph: float,
 ) -> tuple[float, float]:
-    """Find a balloon centre that does not overlap any text bbox on the page."""
-    x0, y0, x1, y1 = item_bbox
-    mcx = (x0 + x1) / 2
-    mcy = (y0 + y1) / 2
-    eff = CIRCLE_RADIUS + 2.0
-    base = max((x1 - x0) * 0.5 + CIRCLE_RADIUS + 6, 18.0)
+    """Fixed-offset balloon placement: left of box, fallback right near page edge."""
+    bx0, by0, _bx1, by1 = item.bbox
+    mid_y = (by0 + by1) / 2
 
-    best: tuple[float, float] | None = None
-    best_score = float("inf")
+    cx = bx0 - BALLOON_OFFSET
+    if cx < PAGE_EDGE_MARGIN:
+        cx = item.bbox[2] + BALLOON_OFFSET
+    if cx > pw - PAGE_EDGE_MARGIN:
+        cx = max(PAGE_EDGE_MARGIN, bx0 - BALLOON_OFFSET)
 
-    for itry in range(1, 100):
-        radius = base + itry * 1.5
-        for a in range(8):
-            ang = a * (2 * math.pi / 8) - math.pi / 2
-            cx = mcx + radius * math.cos(ang)
-            cy = mcy + radius * math.sin(ang)
-            cx = max(eff, min(pw - eff, cx))
-            cy = max(eff, min(ph - eff, cy))
-            cb = (cx - eff, cy - eff, cx + eff, cy + eff)
+    return (cx, mid_y)
 
-            hit = False
-            total_inter = 0.0
-            for tb in all_text_bboxes:
-                if _rects_overlap(cb, tb):
-                    hit = True
-                    ix = max(0.0, min(cb[2], tb[2]) - max(cb[0], tb[0]))
-                    iy = max(0.0, min(cb[3], tb[3]) - max(cb[1], tb[1]))
-                    total_inter += ix * iy
-            if _rects_overlap(cb, item_bbox):
-                hit = True
 
-            if not hit:
-                return (cx, cy)
+def _compute_note_grid_positions(
+    notes: list[FAIItem],
+) -> dict[int, tuple[float, float]]:
+    """Snap all Note balloons to one vertical axis per page."""
+    pages: dict[int, list[FAIItem]] = {}
+    for n in notes:
+        pages.setdefault(n.page_index, []).append(n)
 
-            dist = (cx - mcx) ** 2 + (cy - mcy) ** 2
-            score = total_inter * 500.0 + dist
-            if score < best_score:
-                best_score = score
-                best = (cx, cy)
-
-    return best if best is not None else (max(eff, mcx + base), max(eff, mcy - base))
+    positions: dict[int, tuple[float, float]] = {}
+    for _pi, page_notes in pages.items():
+        axis_x = min(n.bbox[0] for n in page_notes) - BALLOON_OFFSET
+        axis_x = max(PAGE_EDGE_MARGIN, axis_x)
+        for n in page_notes:
+            mid_y = (n.bbox[1] + n.bbox[3]) / 2
+            positions[n.balloon_number] = (axis_x, mid_y)
+    return positions
 
 
 def _annotate_pdf(
@@ -352,13 +450,24 @@ def _annotate_pdf(
     items: list[FAIItem],
     page_text_bboxes: list[list[tuple[float, float, float, float]]],
 ) -> bytes:
+    note_grid = _compute_note_grid_positions(
+        [it for it in items if it.dimension_type == "Note"]
+    )
+
     for item in items:
         if item.page_index >= len(doc):
             continue
         page = doc[item.page_index]
         pw, ph = page.rect.width, page.rect.height
-        bboxes = page_text_bboxes[item.page_index] if item.page_index < len(page_text_bboxes) else []
-        cx, cy = _place_balloon_center(item.bbox, bboxes, pw, ph)
+
+        if item.balloon_number in note_grid:
+            cx, cy = note_grid[item.balloon_number]
+        else:
+            cx, cy = _balloon_center_offset(item, pw, ph)
+
+        eff = CIRCLE_RADIUS + 2.0
+        cx = max(eff, min(pw - eff, cx))
+        cy = max(eff, min(ph - eff, cy))
 
         shape = page.new_shape()
         shape.draw_circle(fitz.Point(cx, cy), CIRCLE_RADIUS)
@@ -413,8 +522,7 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
     pdf_path = Path(pdf_path)
     doc = fitz.open(str(pdf_path))
     page_sizes: list[tuple[float, float]] = []
-    all_notes: list[FAIItem] = []
-    all_dims: list[FAIItem] = []
+    all_targets: list[FAIItem] = []
     page_text_bboxes: list[list[tuple[float, float, float, float]]] = []
 
     for page_idx in range(len(doc)):
@@ -427,14 +535,16 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
         spans = _filter_spans(raw_spans, pw, ph)
 
         notes = _parse_notes(spans, page_idx)
-        note_bboxes = {n.bbox for n in notes}
+        tolerances = _parse_tolerances(spans, page_idx)
 
-        dims = _detect_dimensions(spans, note_bboxes)
+        exclude_bboxes = {n.bbox for n in notes} | {t.bbox for t in tolerances}
+        dims = _detect_dimensions(spans, exclude_bboxes)
 
-        all_notes.extend(notes)
-        all_dims.extend(dims)
+        all_targets.extend(notes)
+        all_targets.extend(tolerances)
+        all_targets.extend(dims)
 
-    items = _assign_numbers(all_notes, all_dims, page_sizes)
+    items = _assign_numbers(all_targets, page_sizes)
     result = FAIResult(items=items, page_sizes=page_sizes)
 
     annotated_bytes = _annotate_pdf(doc, items, page_text_bboxes)
