@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 # Data models
 # ---------------------------------------------------------------------------
 
-DimensionType = Literal["Radius", "Diameter", "Angle", "Linear", "Note"]
+DimensionType = Literal["Radius", "Diameter", "Angle", "Linear", "Note", "GeneralTolerance"]
 
 
 class FAIItem(BaseModel):
@@ -121,6 +121,12 @@ _RE_TOL_HEADER = re.compile(
     re.I,
 )
 
+_RE_GENTOL_LABEL = re.compile(r"^X(?:\.X{1,3})?$")
+_RE_GENTOL_ANGLE = re.compile(r"^ANGLES?$", re.I)
+_RE_GENTOL_VALUE = re.compile(r"^\d+(?:[.,]\d+)?$")
+
+_GENTOL_ROW_Y_THRESH = 4.0
+
 
 # ---------------------------------------------------------------------------
 # Span extraction
@@ -204,6 +210,79 @@ def _filter_spans(
         sp for sp in spans
         if not _is_border_label(sp, pw, ph) and not _is_in_title_block(sp, pw, ph)
     ]
+
+
+# ---------------------------------------------------------------------------
+# GENERAL TOLERANCES parser
+# ---------------------------------------------------------------------------
+
+def _parse_general_tolerances(
+    raw_spans: list[_Span],
+    page_index: int,
+    tol_y: float | None,
+    pw: float,
+) -> list[FAIItem]:
+    """Extract tolerance values from the GENERAL TOLERANCES block.
+
+    Groups spans into rows by Y proximity, then for each row that contains
+    a known label (X, X.X, X.XX, X.XXX, or ANGLES) AND a numeric value to
+    its right, produces a single FAIItem on the value span.  Rows with a
+    label but no numeric value (e.g. bare "X") are skipped.
+    """
+    if tol_y is None:
+        return []
+
+    block_spans = [
+        sp for sp in raw_spans
+        if sp.page_index == page_index and _is_in_tolerance_block(sp, tol_y, pw)
+    ]
+    if not block_spans:
+        return []
+
+    block_spans.sort(key=lambda s: (s.bbox[1] + s.bbox[3]) / 2)
+
+    rows: list[list[_Span]] = []
+    current_row: list[_Span] = [block_spans[0]]
+
+    for sp in block_spans[1:]:
+        cy = (sp.bbox[1] + sp.bbox[3]) / 2
+        prev_cy = (current_row[-1].bbox[1] + current_row[-1].bbox[3]) / 2
+        if abs(cy - prev_cy) <= _GENTOL_ROW_Y_THRESH:
+            current_row.append(sp)
+        else:
+            rows.append(current_row)
+            current_row = [sp]
+    rows.append(current_row)
+
+    items: list[FAIItem] = []
+    for row in rows:
+        row.sort(key=lambda s: s.bbox[0])
+
+        label_x2 = 0.0
+        has_label = False
+        for sp in row:
+            if _RE_GENTOL_LABEL.match(sp.text) or _RE_GENTOL_ANGLE.match(sp.text):
+                has_label = True
+                label_x2 = sp.bbox[2]
+                break
+
+        if not has_label:
+            continue
+
+        for sp in row:
+            if sp.bbox[0] < label_x2:
+                continue
+            if _RE_GENTOL_VALUE.match(sp.text):
+                items.append(FAIItem(
+                    text=sp.text.strip(),
+                    dimension_type="GeneralTolerance",
+                    tolerance="",
+                    page_index=page_index,
+                    bbox=sp.bbox,
+                ))
+                break
+
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +569,7 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
         spans = _filter_spans(raw_spans, pw, ph)
 
         tol_y = _tolerance_block_y(raw_spans, page_idx)
+        tol_items = _parse_general_tolerances(raw_spans, page_idx, tol_y, pw)
         spans = [sp for sp in spans if not _is_in_tolerance_block(sp, tol_y, pw)]
 
         notes = _parse_notes(spans, page_idx)
@@ -499,6 +579,7 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
 
         all_notes.extend(notes)
         all_dims.extend(dims)
+        all_dims.extend(tol_items)
 
     items = _assign_numbers(all_notes, all_dims, page_sizes)
     result = FAIResult(items=items, page_sizes=page_sizes)
