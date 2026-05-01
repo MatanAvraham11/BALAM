@@ -312,7 +312,7 @@ def _detect_dimensions(spans: list[_Span], note_bboxes: set[tuple[float, float, 
 
 
 # ---------------------------------------------------------------------------
-# Numbering: notes first, then clockwise
+# Numbering: unified clockwise
 # ---------------------------------------------------------------------------
 
 def _clockwise_angle(cx: float, cy: float, x: float, y: float) -> float:
@@ -330,8 +330,6 @@ def _assign_numbers(
     dims: list[FAIItem],
     page_sizes: list[tuple[float, float]],
 ) -> list[FAIItem]:
-    notes_sorted = sorted(notes, key=lambda it: (it.page_index, it.bbox[1], it.bbox[0]))
-
     def _sort_key(it: FAIItem) -> tuple[int, float]:
         pw, ph = page_sizes[it.page_index] if it.page_index < len(page_sizes) else (1, 1)
         cx_page, cy_page = pw / 2, ph / 2
@@ -339,9 +337,7 @@ def _assign_numbers(
         iy = (it.bbox[1] + it.bbox[3]) / 2
         return (it.page_index, _clockwise_angle(cx_page, cy_page, ix, iy))
 
-    dims_sorted = sorted(dims, key=_sort_key)
-
-    combined = notes_sorted + dims_sorted
+    combined = sorted(notes + dims, key=_sort_key)
     for i, item in enumerate(combined, start=1):
         item.balloon_number = i
     return combined
