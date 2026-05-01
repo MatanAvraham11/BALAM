@@ -83,10 +83,16 @@ _RE_DIAMETER = re.compile(r"(?:[⌀Øø]|DIA\.?)\s*\d+(?:[.,]\d+)?", re.I)
 _RE_ANGLE = re.compile(r"\d+(?:[.,]\d+)?\s*°")
 _RE_DIM_NUMBER = re.compile(r"\d+(?:[.,]\d+)")
 _RE_NOTES_HEADER = re.compile(r"^\s*NOTES?\s*:?\s*$", re.I)
-_RE_NOTE_BULLET = re.compile(r"^\s*(\d+)\s*[.)]\s+")
+_RE_NOTE_BULLET = re.compile(r"^\s*(\d+)\s*[.)](?=\s|$)")
 _RE_BORDER_LABEL = re.compile(r"^[A-Za-z0-9]$")
 _RE_THREAD = re.compile(
-    r"(?:M\d|#\d|UNC|UNF|UNJC|UNJF|\d+[/-]\d+\s*UN)", re.I
+    r"(?:"
+    r"M\s*\d|"
+    r"#\s*\d|"
+    r"\bUN[CFJ][CF]?-?\s*\d|"
+    r"\d+[/-]\d+\s*UN[A-Z]+"
+    r")",
+    re.I,
 )
 
 # Patterns that look like real dimension text (not just any number)
@@ -95,12 +101,23 @@ _RE_DIM_HINT = re.compile(
     r"\d+[\d.,]*\s*[±+\-]|"
     r"[⌀Øø]|\bR\s*\d|\bR\.|"
     r"\d+\s*°|°\s*\d+|"
-    r"#[\d\-]+|M\d|UNC|UNF|UNJC|THREAD|"
+    r"#[\d\-]+|M\d|\bUN[CFJ][CF]?-?\s*\d|\bTHREAD\b|"
     r"\bRa\b|RZ|"
     r"TYP\.?|REF\.?|MAX\.?|MIN\.?|"
     r"\d+[\d.,]*\s*[xX]\s*\d+|"
     r"\d+[\d.,]{1,}\b"
     r")",
+    re.I,
+)
+
+_RE_DOC_STAMP = re.compile(
+    r"\b(UNCLASSIFIED|CLASSIFIED|CONFIDENTIAL|SECRET|RESTRICTED|"
+    r"UNCONTROLLED|CONTROLLED|RELEASED|PROPRIETARY|ITAR|EAR)\b",
+    re.I,
+)
+
+_RE_TOL_HEADER = re.compile(
+    r"\b(?:GENERAL\s+TOLERANCES?|TOLERANCES?\s*:|UNLESS\s+OTHERWISE\s+SPECIFIED)",
     re.I,
 )
 
@@ -157,6 +174,27 @@ def _is_in_title_block(sp: _Span, pw: float, ph: float) -> bool:
     cx = (sp.bbox[0] + sp.bbox[2]) / 2
     cy = (sp.bbox[1] + sp.bbox[3]) / 2
     return cx >= pw * _TITLE_BLOCK_X_FRAC and cy >= ph * _TITLE_BLOCK_Y_FRAC
+
+
+def _tolerance_block_y(
+    spans: list[_Span], page_index: int,
+) -> float | None:
+    """Return the top-Y of the GENERAL TOLERANCES header on this page, if any."""
+    ys = [
+        sp.bbox[1]
+        for sp in spans
+        if sp.page_index == page_index and _RE_TOL_HEADER.search(sp.text)
+    ]
+    return min(ys) if ys else None
+
+
+def _is_in_tolerance_block(
+    sp: _Span, tol_y: float | None, pw: float,
+) -> bool:
+    if tol_y is None:
+        return False
+    cx = (sp.bbox[0] + sp.bbox[2]) / 2
+    return sp.bbox[1] >= tol_y and 0.40 * pw <= cx <= 0.62 * pw
 
 
 def _filter_spans(
@@ -254,6 +292,8 @@ def _detect_dimensions(spans: list[_Span], note_bboxes: set[tuple[float, float, 
     items: list[FAIItem] = []
     for sp in spans:
         if sp.bbox in note_bboxes:
+            continue
+        if _RE_DOC_STAMP.search(sp.text):
             continue
         if not _looks_like_dimension(sp.text):
             continue
@@ -452,6 +492,9 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
         raw_spans = _extract_spans(page, page_idx)
         page_text_bboxes.append([sp.bbox for sp in raw_spans])
         spans = _filter_spans(raw_spans, pw, ph)
+
+        tol_y = _tolerance_block_y(raw_spans, page_idx)
+        spans = [sp for sp in spans if not _is_in_tolerance_block(sp, tol_y, pw)]
 
         notes = _parse_notes(spans, page_idx)
         note_bboxes = {n.bbox for n in notes}
