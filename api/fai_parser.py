@@ -64,6 +64,12 @@ _TITLE_BLOCK_Y_FRAC = 0.72
 # Border margin for grid-label filtering (fraction of page dimensions)
 _BORDER_MARGIN_FRAC = 0.03
 
+# Fixed left-offset for note balloons (PDF user-space units ≈ points)
+_NOTE_BALLOON_OFFSET_X = 20.0
+
+# Maximum Y gap between consecutive note lines before collection stops
+_NOTE_BREAK_Y = 60.0
+
 # ---------------------------------------------------------------------------
 # Regex patterns
 # ---------------------------------------------------------------------------
@@ -167,29 +173,43 @@ def _filter_spans(
 # ---------------------------------------------------------------------------
 
 def _parse_notes(spans: list[_Span], page_index: int) -> list[FAIItem]:
-    """Find the NOTES header on the given page and collect numbered bullets."""
-    header_found = False
+    """Find NOTES / NOTES: header and collect numbered lines strictly below it."""
+    header_bbox: tuple[float, float, float, float] | None = None
     for sp in spans:
         if sp.page_index == page_index and _RE_NOTES_HEADER.match(sp.text):
-            header_found = True
+            header_bbox = sp.bbox
             break
-    if not header_found:
+    if header_bbox is None:
         return []
 
-    page_spans = [sp for sp in spans if sp.page_index == page_index]
-    page_spans.sort(key=lambda s: (s.bbox[1], s.bbox[0]))
+    below = sorted(
+        [
+            sp
+            for sp in spans
+            if sp.page_index == page_index and sp.bbox[1] >= header_bbox[3]
+        ],
+        key=lambda s: (s.bbox[1], s.bbox[0]),
+    )
 
     notes: list[FAIItem] = []
-    for sp in page_spans:
+    prev_bottom = header_bbox[3]
+
+    for sp in below:
+        if sp.bbox[1] - prev_bottom > _NOTE_BREAK_Y:
+            break
         m = _RE_NOTE_BULLET.match(sp.text)
         if m:
-            notes.append(FAIItem(
-                text=sp.text.strip(),
-                dimension_type="Note",
-                tolerance="",
-                page_index=page_index,
-                bbox=sp.bbox,
-            ))
+            notes.append(
+                FAIItem(
+                    text=sp.text.strip(),
+                    dimension_type="Note",
+                    tolerance="",
+                    page_index=page_index,
+                    bbox=sp.bbox,
+                )
+            )
+        prev_bottom = sp.bbox[3]
+
     return notes
 
 
@@ -358,7 +378,14 @@ def _annotate_pdf(
         page = doc[item.page_index]
         pw, ph = page.rect.width, page.rect.height
         bboxes = page_text_bboxes[item.page_index] if item.page_index < len(page_text_bboxes) else []
-        cx, cy = _place_balloon_center(item.bbox, bboxes, pw, ph)
+        if item.dimension_type == "Note":
+            cx = item.bbox[0] - _NOTE_BALLOON_OFFSET_X
+            cy = (item.bbox[1] + item.bbox[3]) / 2
+            eff = CIRCLE_RADIUS + 2.0
+            cx = max(eff, min(pw - eff, cx))
+            cy = max(eff, min(ph - eff, cy))
+        else:
+            cx, cy = _place_balloon_center(item.bbox, bboxes, pw, ph)
 
         shape = page.new_shape()
         shape.draw_circle(fitz.Point(cx, cy), CIRCLE_RADIUS)
