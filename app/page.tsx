@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import SiteNav from "./components/SiteNav";
 import ProductCard from "./components/ProductCard";
 import BalamTab from "./components/BalamTab";
 import DrawingTab from "./components/DrawingTab";
@@ -56,35 +57,31 @@ export default function Home() {
 
   return (
     <div className="flex min-h-screen flex-col items-center">
-      <header className="w-full border-b border-gray-200 bg-white/60">
-        <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-4 py-6 sm:px-6 lg:px-8">
-          <button
-            type="button"
-            dir="ltr"
-            onClick={goHome}
-            aria-label='Nativ נתיב — חזרה לעמוד הבית'
-            className="flex w-full cursor-pointer items-center justify-between gap-4 text-start outline-none transition-colors hover:opacity-90 focus-visible:rounded-md focus-visible:ring-2 focus-visible:ring-nativ-gold/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white/60"
-          >
-            <img
-              src="/branding/nativ-logo.svg"
-              alt="Nativ Logo"
-              draggable={false}
-              fetchPriority="high"
-              className="pointer-events-none h-12 w-auto shrink-0 object-contain object-left sm:h-14"
-            />
-            <div dir="rtl" className="min-w-0 shrink pl-2 text-right sm:pl-4">
-              <h1 className="text-xl font-extrabold leading-tight tracking-tight text-nativ-dark sm:text-2xl">
-                Nativ
-                <span className="mx-1.5 text-nativ-gold sm:mx-2">|</span>
-                <span className="text-nativ-gold">נתיב</span>
-              </h1>
-              <p className="mt-0.5 max-w-md text-xs leading-snug text-nativ-dark/70 sm:text-sm">
-                מערכות ואוטומציות למפעלים
-              </p>
-            </div>
-          </button>
-        </div>
-      </header>
+      <div className="w-full">
+        <SiteNav />
+        <header className="w-full border-b border-gray-200 bg-white/60">
+          <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
+            <button
+              type="button"
+              dir="ltr"
+              onClick={goHome}
+              aria-label='Nativ נתיב — חזרה לעמוד הבית'
+              className="flex w-full cursor-pointer items-center justify-end gap-4 text-start outline-none transition-colors hover:opacity-90 focus-visible:rounded-md focus-visible:ring-2 focus-visible:ring-nativ-gold/50 focus-visible:ring-offset-2 focus-visible:ring-offset-white/60"
+            >
+              <div dir="rtl" className="min-w-0 shrink text-right">
+                <h1 className="text-xl font-extrabold leading-tight tracking-tight text-nativ-dark sm:text-2xl">
+                  Nativ
+                  <span className="mx-1.5 text-nativ-gold sm:mx-2">|</span>
+                  <span className="text-nativ-gold">נתיב</span>
+                </h1>
+                <p className="mt-0.5 max-w-md text-xs leading-snug text-nativ-dark/70 sm:text-sm">
+                  מערכות ואוטומציות למפעלים
+                </p>
+              </div>
+            </button>
+          </div>
+        </header>
+      </div>
 
       <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-4 sm:px-6 lg:px-8">
         {view === "dashboard" && (

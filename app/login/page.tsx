@@ -2,6 +2,7 @@
 
 import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import SiteNav from "../components/SiteNav";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -33,22 +34,19 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center bg-nativ-light text-nativ-dark">
-      <header className="w-full max-w-md px-4 pt-8 pb-2 text-center sm:px-6">
-        <img
-          src="/branding/nativ-logo.svg"
-          alt="Nativ Logo"
-          fetchPriority="high"
-          className="mx-auto h-12 w-auto max-w-full object-contain sm:h-14"
-        />
-        <p className="mt-3 text-xs leading-snug text-nativ-dark/70 sm:text-sm">
-          מערכות ואוטומציות למפעלים
-        </p>
-      </header>
+    <div className="flex min-h-screen flex-col bg-nativ-light text-nativ-dark">
+      <SiteNav />
+      <div className="flex flex-1 flex-col items-center">
+        <header className="w-full max-w-md px-4 pt-8 pb-2 text-center sm:px-6">
+          <p className="text-xs leading-snug text-nativ-dark/70 sm:text-sm">
+            מערכות ואוטומציות למפעלים
+          </p>
+          <p className="mt-2 text-sm font-medium text-nativ-dark">כניסה למערכת</p>
+        </header>
 
-      <hr className="mb-6 w-full max-w-md border-t border-gray-200 px-4 sm:px-6" />
+        <hr className="mb-6 w-full max-w-md border-t border-gray-200 px-4 sm:px-6" />
 
-      <main className="mx-auto w-full max-w-md flex-1 px-4 pb-12 sm:px-6">
+        <main className="mx-auto w-full max-w-md flex-1 px-4 pb-12 sm:px-6">
         <form
           onSubmit={handleSubmit}
           className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm"
@@ -80,7 +78,8 @@ export default function LoginPage() {
             {loading ? "..." : "כניסה"}
           </button>
         </form>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
