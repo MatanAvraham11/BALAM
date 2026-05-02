@@ -3,7 +3,15 @@ import { Resend } from "resend";
 
 export const runtime = "nodejs";
 
+/** Resend sandbox default sender — single line; env may accidentally contain newlines. */
+const DEFAULT_RESEND_FROM = "onboarding@resend.dev";
+
 type FormType = "Contact" | "Support";
+
+/** Strip whitespace/newlines so pasted env values like "onboarding@\nresend.dev" work. */
+function normalizeEmailLike(value: string): string {
+  return value.replace(/\s/g, "").trim();
+}
 
 function escapeHtml(s: string): string {
   return s
@@ -21,7 +29,7 @@ function buildHtmlBody(fields: Record<string, string | undefined>): string {
         `<tr><td style="padding:8px 12px;border:1px solid #e5e5e5;background:#fafafa;font-weight:600;">${escapeHtml(k)}</td><td style="padding:8px 12px;border:1px solid #e5e5e5;">${escapeHtml(String(v))}</td></tr>`,
     )
     .join("");
-  return `<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"/></head><body style="font-family:Arial,sans-serif;background:#f2f0ef;color:#323233;padding:24px;"><table style="border-collapse:collapse;width:100%;max-width:560px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;">${rows}</table></body></html>`;
+  return `<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="utf-8"/></head><body style="font-family:Arial,sans-serif;background:#f2f0ef;color:#323233;padding:24px;text-align:right;direction:rtl;"><table style="border-collapse:collapse;width:100%;max-width:560px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;">${rows}</table></body></html>`;
 }
 
 export async function POST(request: Request) {
@@ -74,10 +82,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "כתובת האימייל אינה תקינה." }, { status: 400 });
   }
 
-  const to =
-    process.env.CONTACT_EMAIL_TO ||
-    process.env.ADMIN_EMAIL ||
-    "";
+  const to = normalizeEmailLike(
+    process.env.CONTACT_EMAIL_TO || process.env.ADMIN_EMAIL || "",
+  );
 
   if (!to) {
     return NextResponse.json(
@@ -86,12 +93,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const from = process.env.RESEND_FROM_EMAIL;
-  if (!from) {
-    return NextResponse.json(
-      { error: "כתובת שולח לא הוגדרה בשרת." },
-      { status: 503 },
-    );
+  let from = normalizeEmailLike(
+    process.env.RESEND_FROM_EMAIL || DEFAULT_RESEND_FROM,
+  );
+  if (!emailRe.test(from)) {
+    from = DEFAULT_RESEND_FROM;
   }
 
   const labels: Record<string, string> = {
@@ -122,6 +128,8 @@ export async function POST(request: Request) {
       : `פנייה חדשה — תמיכה — ${fullName}`;
 
   const resend = new Resend(apiKey);
+  console.log("[send-email] sending", { from, to });
+
   const { error } = await resend.emails.send({
     from,
     to: [to],
