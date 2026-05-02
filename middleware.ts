@@ -28,7 +28,7 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 export async function middleware(req: NextRequest) {
-  const secret = process.env.APP_SESSION_SECRET;
+  const secret = process.env.APP_SESSION_SECRET?.trim();
   if (!secret) {
     return new NextResponse("APP_SESSION_SECRET is not configured", {
       status: 500,

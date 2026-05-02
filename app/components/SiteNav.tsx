@@ -6,6 +6,7 @@ export default function SiteNav() {
       <nav className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
         <Link
           href="/"
+          prefetch={false}
           className="flex shrink-0 items-center gap-3 outline-none transition-opacity hover:opacity-90 focus-visible:rounded-md focus-visible:ring-2 focus-visible:ring-nativ-gold/40 focus-visible:ring-offset-2"
         >
           <img
