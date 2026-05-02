@@ -2,8 +2,8 @@ import Link from "next/link";
 
 export default function SiteNav() {
   return (
-    <header className="sticky top-0 z-50 border-b border-stone-200/90 bg-white/90 backdrop-blur-md">
-      <nav className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
+    <header className="sticky top-0 z-50 w-full border-b border-stone-200/90 bg-white/90 backdrop-blur-md">
+      <nav className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
         <Link
           href="/"
           prefetch={false}
