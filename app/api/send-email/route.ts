@@ -93,12 +93,14 @@ export async function POST(request: Request) {
     );
   }
 
-  let from = normalizeEmailLike(
+  let fromEmail = normalizeEmailLike(
     process.env.RESEND_FROM_EMAIL || DEFAULT_RESEND_FROM,
   );
-  if (!emailRe.test(from)) {
-    from = DEFAULT_RESEND_FROM;
+  if (!emailRe.test(fromEmail)) {
+    fromEmail = DEFAULT_RESEND_FROM;
   }
+  /** Display name matches Resend dashboard style ("Name <email>") for provider compatibility. */
+  const from = `Nativ <${fromEmail}>`;
 
   const labels: Record<string, string> = {
     formType: "סוג טופס",
