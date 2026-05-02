@@ -1,6 +1,10 @@
 {
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index" }
+    { "source": "/api/login", "destination": "/api/index" },
+    { "source": "/api/logout", "destination": "/api/index" },
+    { "source": "/api/auth", "destination": "/api/index" },
+    { "source": "/api/balam", "destination": "/api/index" },
+    { "source": "/api/drawing", "destination": "/api/index" }
   ],
   "build": {
     "env": {
