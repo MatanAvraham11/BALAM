@@ -245,7 +245,7 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
             .agg({"כמות נדרשת": "sum"})
         )
         df.insert(0, "מספר", range(1, len(df) + 1))
-        df["מספר הצעה"] = order.balam_number
+        df["מספר הצעה"] = str(order.balam_number)
         df["קניין"] = order.buyer_name
         df = df[["מספר", 'מק"ט ספק', "כמות נדרשת", "הוצאה", "מספר הצעה", "קניין"]]
 
@@ -255,6 +255,8 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
         csv_basename = original_name.rsplit(".", 1)[0] + ".csv"
 
         buf = io.StringIO()
+        # Leading tab forces Excel to treat cell as text (avoids scientific notation).
+        df["מספר הצעה"] = "\t" + str(order.balam_number)
         df.to_csv(buf, index=False)
         csv_bytes = buf.getvalue().encode("windows-1255", errors="replace")
 
