@@ -21,7 +21,7 @@ function LogoRow() {
             loading="lazy"
             decoding="async"
             draggable={false}
-            className="h-[3.75rem] w-auto max-w-[13.5rem] object-contain object-center grayscale transition-[filter,opacity] duration-300 ease-out hover:grayscale-0 sm:h-[4.5rem] md:h-[5.25rem] lg:h-24 sm:max-w-[16.5rem] md:max-w-none"
+            className="h-[3.75rem] w-auto max-w-[13.5rem] object-contain object-center mix-blend-multiply grayscale transition-[filter,opacity] duration-300 ease-out hover:grayscale-0 sm:h-[4.5rem] md:h-[5.25rem] lg:h-24 sm:max-w-[16.5rem] md:max-w-none"
           />
         </div>
       ))}
@@ -38,7 +38,7 @@ function LogoTrack({ duplicate }: { duplicate?: boolean }) {
     >
       <LogoRow />
       <div
-        className="h-1 shrink-0 w-12 sm:w-16 md:w-20 lg:w-24"
+        className="h-1 w-8 shrink-0 sm:w-10 md:w-12 lg:w-14"
         aria-hidden
       />
     </div>
@@ -60,11 +60,12 @@ export default function LogoMarquee() {
         </span>
       </h2>
 
+      {/* full-bleed: margin-inline מתאים גם ל־RTL (לא כמו left-1/2 + translate שפותחים פער בצד אחד) */}
       <div
-        className="relative left-1/2 w-screen max-w-[100vw] -translate-x-1/2"
+        className="relative w-[100vw] max-w-[100vw] shrink-0 ms-[calc(50%-50vw)] me-[calc(50%-50vw)]"
         dir="ltr"
       >
-        <div className="relative flex items-center justify-center overflow-hidden bg-gray-50 py-7 sm:py-9 md:py-10">
+        <div className="relative overflow-hidden bg-gray-50 py-7 sm:py-9 md:py-10">
           {/* Fade מקצוות — תואם ל־bg-gray-50 של הפס */}
           <div
             className="pointer-events-none absolute inset-y-0 left-0 z-10 w-20 bg-gradient-to-r from-gray-50 from-[12%] via-gray-50/65 to-transparent sm:w-28 md:w-40 md:from-[8%]"
