@@ -232,7 +232,7 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
 
         rows = [
             {
-                'מק"ט ספק': item.supplier_sku,
+                "מקט ספק": item.supplier_sku,
                 "כמות נדרשת": item.required_quantity,
                 "הוצאה": item.revision,
             }
@@ -241,13 +241,14 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
         df = pd.DataFrame(rows)
 
         df = (
-            df.groupby(['מק"ט ספק', "הוצאה"], as_index=False, sort=False)
+            df.groupby(["מקט ספק", "הוצאה"], as_index=False, sort=False)
             .agg({"כמות נדרשת": "sum"})
         )
         df.insert(0, "מספר", range(1, len(df) + 1))
         df["מספר הצעה"] = str(order.balam_number)
+        df["לקוח"] = order.customer_name or ""
         df["קניין"] = order.buyer_name
-        df = df[["מספר", 'מק"ט ספק', "כמות נדרשת", "הוצאה", "מספר הצעה", "קניין"]]
+        df = df[["מספר", "מקט ספק", "כמות נדרשת", "הוצאה", "מספר הצעה", "לקוח", "קניין"]]
 
         aggregated_rows: list[dict[str, Any]] = df.to_dict(orient="records")
 
@@ -263,6 +264,7 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
         return JSONResponse(content={
             "balam_number": order.balam_number,
             "buyer_name": order.buyer_name,
+            "customer_name": order.customer_name,
             "aggregated_rows": aggregated_rows,
             "csv_base64": base64.b64encode(csv_bytes).decode(),
             "csv_filename": csv_basename,

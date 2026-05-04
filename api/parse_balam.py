@@ -45,6 +45,15 @@ class PurchaseOrder(BaseModel):
             "אין לקצר, אין לתרגם."
         )
     )
+    customer_name: str = Field(
+        default="",
+        description=(
+            "שם הלקוח (החברה שאליה שולחים את ההצעה). מופיע מתחת לכותרת "
+            '"הערות קניין כלליות". יש לזהות לפי השם האנגלי של החברה ולהחזיר '
+            'את השם המלא בעברית (למשל: "תעשייה אווירית לישראל בע\\"מ", '
+            '"אלתא מערכות בע\\"מ").'
+        ),
+    )
     line_items: list[LineItem] = Field(
         description='רשימת שורות ההזמנה (מספר שורה 10, 20, 30 וכו\')'
     )
@@ -69,6 +78,47 @@ def extract_buyer_name(text: str) -> str | None:
             return line_match.group(1).strip()
         return raw
     return None
+
+
+# Anchor that precedes the customer (recipient) block in every BLM template.
+# pdfplumber returns Hebrew in visual (reversed) order — this is "הערות קניין כלליות".
+_CUSTOMER_ANCHOR_RE = re.compile(r'תויללכ ןיינק תורעה')
+
+# English keyword in the recipient block → canonical Hebrew customer name.
+# Order matters: longer/more specific keywords first to avoid partial matches.
+_CUSTOMER_KEYWORDS: list[tuple[str, str]] = [
+    ("ISRAEL AEROSPACE", 'תעשייה אווירית לישראל בע"מ'),
+    ("ELTA", 'אלתא מערכות בע"מ'),
+    ("RAFAEL", 'רפאל מערכות לחימה מתקדמות בע"מ'),
+    ("ELBIT", 'אלביט מערכות בע"מ'),
+    ("IMI", "IMI Systems"),
+]
+
+
+def extract_customer_name(text: str) -> str | None:
+    """Extract the customer (recipient) company name.
+
+    The customer block sits right after the visual-reversed marker
+    "הערות קניין כלליות". The first ~3 lines beneath it contain the company
+    name in Hebrew (visual-reversed) and English. We match on the English
+    keyword (LTR, stable across PDFs) and return a canonical Hebrew name.
+
+    Falls back to the raw first line under the marker if no keyword matches,
+    so the export never blocks; callers can later add a mapping entry.
+    """
+    anchor = _CUSTOMER_ANCHOR_RE.search(text)
+    if not anchor:
+        return None
+
+    after = text[anchor.end():]
+    next_lines = [line.strip() for line in after.splitlines() if line.strip()]
+    window = " ".join(next_lines[:4]).upper()
+
+    for keyword, canonical in _CUSTOMER_KEYWORDS:
+        if keyword in window:
+            return canonical
+
+    return next_lines[0] if next_lines else None
 
 
 def extract_text_from_pdf(pdf_path: str | Path) -> str:
@@ -139,6 +189,7 @@ def parse_with_regex(text: str) -> PurchaseOrder | None:
     return PurchaseOrder(
         balam_number=balam_number,
         buyer_name=buyer_name,
+        customer_name=extract_customer_name(text) or "",
         line_items=line_items,
     )
 
@@ -183,6 +234,13 @@ SYSTEM_PROMPT = """\
 - buyer_name: שם הקניין – יש להחזיר את **כל** הערך שמופיע בשדה "קניין שם" בדיוק כפי שהוא.
   הערך יכול לכלול שם ואחריו קוד/מספרים (למשל "S. Azoulay FE4" או "I. TAMIR F82").
   יש להחזיר את כל המחרוזת כולל הקוד בסוף, ללא קיצור, ללא תרגום.
+- customer_name: שם הלקוח (החברה שאליה שולחים את ההצעה).
+  מופיע מתחת לכותרת "הערות קניין כלליות" כמספר שורות עם השם בעברית ובאנגלית.
+  זהה את החברה לפי השם האנגלי והחזר את השם המלא בעברית לדוגמה:
+    "ISRAEL AEROSPACE INDUSTRIES LTD" → "תעשייה אווירית לישראל בע\"מ"
+    "ELTA SYSTEMS LTD" → "אלתא מערכות בע\"מ"
+    "RAFAEL" → "רפאל מערכות לחימה מתקדמות בע\"מ"
+    "ELBIT" → "אלביט מערכות בע\"מ"
 
 שורות הזמנה (line_items) – בדרך כלל מסומנות לפי "מספר שורה" (10, 20, 30...):
 - supplier_sku: מק"ט ספק
@@ -233,6 +291,11 @@ def parse_with_openai(text: str) -> PurchaseOrder:
     if buyer_name:
         result = result.model_copy(update={"buyer_name": buyer_name})
 
+    if not result.customer_name:
+        customer_name = extract_customer_name(text)
+        if customer_name:
+            result = result.model_copy(update={"customer_name": customer_name})
+
     return result
 
 
@@ -244,7 +307,7 @@ def export_to_csv(order: PurchaseOrder, output_path: str | Path) -> Path:
     """Flatten *order* into a CSV with one row per line-item."""
     rows = [
         {
-            'מק"ט ספק': item.supplier_sku,
+            "מקט ספק": item.supplier_sku,
             "כמות נדרשת": item.required_quantity,
             "הוצאה": item.revision,
         }
@@ -256,6 +319,7 @@ def export_to_csv(order: PurchaseOrder, output_path: str | Path) -> Path:
 
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         f.write(f'מספר בל"מ: {order.balam_number}\n')
+        f.write(f"לקוח: {order.customer_name}\n")
         f.write(f"קניין: {order.buyer_name}\n")
         f.write("\n")
         df.to_csv(f, index=False)

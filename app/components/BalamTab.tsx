@@ -9,22 +9,24 @@ import { downloadBase64 } from "../lib/download";
 
 type BalamRow = {
   "מספר": number;
-  'מק"ט ספק': string;
+  "מקט ספק": string;
   "כמות נדרשת": number;
   "הוצאה": string;
   "מספר הצעה": string;
+  "לקוח": string;
   "קניין": string;
 };
 
 type BalamResponse = {
   balam_number: string;
   buyer_name: string;
+  customer_name: string;
   aggregated_rows: BalamRow[];
   csv_base64: string;
   csv_filename: string;
 };
 
-const COLUMNS = ["מספר", 'מק"ט ספק', "כמות נדרשת", "הוצאה", "מספר הצעה", "קניין"];
+const COLUMNS = ["מספר", "מקט ספק", "כמות נדרשת", "הוצאה", "מספר הצעה", "לקוח", "קניין"];
 
 export default function BalamTab() {
   const [file, setFile] = useState<File | null>(null);
@@ -128,6 +130,7 @@ export default function BalamTab() {
           <InfoCard
             items={[
               { label: 'מספר בל"מ', value: data.balam_number },
+              { label: "לקוח", value: data.customer_name || "—" },
               { label: "קניין", value: data.buyer_name },
             ]}
           />
