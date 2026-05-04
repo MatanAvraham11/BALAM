@@ -13,7 +13,7 @@ function LogoRow() {
       {PARTNERS.map(({ src, alt }) => (
         <div
           key={src}
-          className="flex shrink-0 items-center justify-center px-7 sm:px-12 md:px-16"
+          className="flex shrink-0 items-center justify-center"
         >
           <img
             src={src}
@@ -21,7 +21,7 @@ function LogoRow() {
             loading="lazy"
             decoding="async"
             draggable={false}
-            className="h-[3.75rem] w-auto max-w-[13.5rem] object-contain object-center grayscale transition-[filter,opacity] duration-300 ease-out hover:grayscale-0 sm:h-[4.5rem] md:h-[5.25rem] lg:h-24 sm:max-w-[16.5rem] md:max-w-none"
+            className="h-[3.75rem] w-auto max-w-[13.5rem] object-contain object-center mix-blend-multiply grayscale transition-[filter,opacity] duration-300 ease-out hover:grayscale-0 sm:h-[4.5rem] md:h-[5.25rem] lg:h-24 sm:max-w-[16.5rem] md:max-w-none"
           />
         </div>
       ))}
@@ -44,15 +44,28 @@ export default function LogoMarquee() {
         </span>
       </h2>
 
-      <div className="relative overflow-hidden" dir="ltr">
-        <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-12 bg-gradient-to-r from-[var(--color-nativ-light)] to-transparent sm:w-16 md:w-24" />
-        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-12 bg-gradient-to-l from-[var(--color-nativ-light)] to-transparent sm:w-16 md:w-24" />
+      <div
+        className="relative overflow-hidden rounded-2xl bg-gray-50 py-7 sm:py-9 md:py-10"
+        dir="ltr"
+      >
+        {/* Fade מקצוות — תואם לרקע הפס */}
+        <div
+          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-20 bg-gradient-to-r from-gray-50 from-[12%] via-gray-50/65 to-transparent sm:w-28 md:w-40 md:from-[8%]"
+          aria-hidden
+        />
+        <div
+          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-20 bg-gradient-to-l from-gray-50 from-[12%] via-gray-50/65 to-transparent sm:w-28 md:w-40 md:from-[8%]"
+          aria-hidden
+        />
 
         <div className="flex w-max animate-logo-marquee">
-          <div className="flex shrink-0 items-center">
+          <div className="flex shrink-0 items-center gap-14 sm:gap-20 md:gap-24 lg:gap-28">
             <LogoRow />
           </div>
-          <div className="flex shrink-0 items-center" aria-hidden="true">
+          <div
+            className="flex shrink-0 items-center gap-14 sm:gap-20 md:gap-24 lg:gap-28"
+            aria-hidden="true"
+          >
             <LogoRow />
           </div>
         </div>
