@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import SiteNav from "./components/SiteNav";
+import LogoMarquee from "./components/LogoMarquee";
 import ProductCard from "./components/ProductCard";
 import BalamTab from "./components/BalamTab";
 import DrawingTab from "./components/DrawingTab";
@@ -61,22 +62,25 @@ export default function Home() {
 
       <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-4 sm:px-6 lg:px-8">
         {view === "dashboard" && (
-          <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {PRODUCTS.map((p) => (
-              <div key={p.id} className="h-full min-h-0">
-                <ProductCard
-                  title={p.title}
-                  description={p.description}
-                  onEnter={() => setView(p.id)}
-                />
-              </div>
-            ))}
-            {LOCKED.map((p) => (
-              <div key={p.title} className="h-full min-h-0">
-                <ProductCard title={p.title} locked />
-              </div>
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {PRODUCTS.map((p) => (
+                <div key={p.id} className="h-full min-h-0">
+                  <ProductCard
+                    title={p.title}
+                    description={p.description}
+                    onEnter={() => setView(p.id)}
+                  />
+                </div>
+              ))}
+              {LOCKED.map((p) => (
+                <div key={p.title} className="h-full min-h-0">
+                  <ProductCard title={p.title} locked />
+                </div>
+              ))}
+            </div>
+            <LogoMarquee />
+          </>
         )}
 
         {view !== "dashboard" && (

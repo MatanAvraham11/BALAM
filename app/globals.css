@@ -18,3 +18,34 @@ body {
   background-color: var(--color-nativ-light);
   color: var(--color-nativ-dark);
 }
+
+@keyframes logo-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-logo-marquee {
+  animation: logo-marquee 52s linear infinite;
+}
+
+@media (min-width: 640px) {
+  .animate-logo-marquee {
+    animation-duration: 48s;
+  }
+}
+
+@media (min-width: 1024px) {
+  .animate-logo-marquee {
+    animation-duration: 44s;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-logo-marquee {
+    animation: none;
+  }
+}
