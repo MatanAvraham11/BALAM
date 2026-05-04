@@ -3,8 +3,6 @@
 type Props = {
   title: string;
   description?: string;
-  /** נתיב לאייקון SVG תחת /public */
-  iconSrc: string;
   locked?: boolean;
   /** When locked: תג תחתון לפי סוג מוצר */
   lockedStatus?: "development" | "not_in_package";
@@ -33,35 +31,52 @@ function LockIcon({ className }: { className?: string }) {
   );
 }
 
-function CardIcon({
-  iconSrc,
+/** מסמן מוצר בפיתוח — בנוסף לתג המנעול הקטן */
+function MobileIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+    >
+      <rect x="6" y="3" width="12" height="18" rx="2" />
+      <path d="M10 17h4" />
+    </svg>
+  );
+}
+
+function CardHeader({
   title,
   locked,
+  lockedStatus = "development",
 }: {
-  iconSrc: string;
   title: string;
   locked: boolean;
+  lockedStatus?: "development" | "not_in_package";
 }) {
-  return (
-    <div className="flex shrink-0 items-start gap-3">
-      <div className="relative shrink-0">
-        <div
-          className={
-            locked
-              ? "flex h-[3.25rem] w-[3.25rem] items-center justify-center rounded-2xl border border-stone-200/90 bg-stone-50/90 sm:h-14 sm:w-14"
-              : "flex h-[3.25rem] w-[3.25rem] items-center justify-center rounded-2xl border border-nativ-gold/20 bg-gradient-to-br from-white to-amber-50/40 shadow-sm ring-1 ring-nativ-gold/10 sm:h-14 sm:w-14"
-          }
-        >
-          <img
-            src={iconSrc}
-            alt=""
-            width={48}
-            height={48}
-            draggable={false}
-            className="h-9 w-9 object-contain sm:h-10 sm:w-10"
-          />
-        </div>
-        {locked ? (
+  if (!locked) {
+    return (
+      <h3 className="min-w-0 pt-0.5 text-lg font-bold leading-snug text-nativ-dark">
+        {title}
+      </h3>
+    );
+  }
+
+  const titleClass =
+    "min-w-0 flex-1 pt-0.5 text-lg font-bold leading-snug text-nativ-dark/55";
+
+  if (lockedStatus === "development") {
+    return (
+      <div className="flex shrink-0 items-start gap-3">
+        <div className="relative shrink-0">
+          <div className="flex h-[3.25rem] w-[3.25rem] items-center justify-center rounded-2xl border border-stone-200/90 bg-stone-50/90 sm:h-14 sm:w-14">
+            <MobileIcon className="h-8 w-8 text-gray-400 sm:h-9 sm:w-9" />
+          </div>
           <span
             className="absolute -bottom-0.5 -left-0.5 flex h-6 w-6 items-center justify-center rounded-full border border-stone-200 bg-white shadow-sm"
             title="נעול"
@@ -69,17 +84,19 @@ function CardIcon({
           >
             <LockIcon className="h-3.5 w-3.5 text-gray-400" />
           </span>
-        ) : null}
+        </div>
+        <h3 className={titleClass}>{title}</h3>
       </div>
-      <h3
-        className={
-          locked
-            ? "min-w-0 flex-1 pt-0.5 text-lg font-bold leading-snug text-nativ-dark/55"
-            : "min-w-0 flex-1 pt-0.5 text-lg font-bold leading-snug text-nativ-dark"
-        }
-      >
-        {title}
-      </h3>
+    );
+  }
+
+  return (
+    <div className="flex items-start gap-2">
+      <LockIcon
+        className="mt-1 h-5 w-5 shrink-0 text-gray-400"
+        aria-hidden
+      />
+      <h3 className={`${titleClass} flex-1`}>{title}</h3>
     </div>
   );
 }
@@ -87,7 +104,6 @@ function CardIcon({
 export default function ProductCard({
   title,
   description,
-  iconSrc,
   locked,
   lockedStatus = "development",
   onEnter,
@@ -99,7 +115,11 @@ export default function ProductCard({
         : "בפיתוח";
     return (
       <div className="flex h-full min-h-[280px] select-none flex-col rounded-xl border border-gray-200 bg-white/60 p-6 text-right shadow-sm backdrop-blur-sm">
-        <CardIcon iconSrc={iconSrc} title={title} locked />
+        <CardHeader
+          title={title}
+          locked
+          lockedStatus={lockedStatus}
+        />
         {description ? (
           <p className="mt-3 min-h-0 flex-1 text-sm leading-relaxed text-nativ-dark/55">
             {description}
@@ -120,7 +140,7 @@ export default function ProductCard({
 
   return (
     <div className="flex h-full min-h-[280px] flex-col rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:border-nativ-gold/40 hover:shadow-md">
-      <CardIcon iconSrc={iconSrc} title={title} locked={false} />
+      <CardHeader title={title} locked={false} />
       <p className="mt-3 min-h-0 flex-1 text-sm leading-relaxed text-nativ-dark/70">
         {description}
       </p>
