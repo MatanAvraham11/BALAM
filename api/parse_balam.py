@@ -320,7 +320,7 @@ def export_to_csv(order: PurchaseOrder, output_path: str | Path) -> Path:
     with open(out, "w", encoding="utf-8-sig", newline="") as f:
         f.write(f'מספר בל"מ: {order.balam_number}\n')
         f.write(f"לקוח: {order.customer_name}\n")
-        f.write(f"קניין: {order.buyer_name}\n")
+        f.write(f"לידי: {order.buyer_name}\n")
         f.write("\n")
         df.to_csv(f, index=False)
 

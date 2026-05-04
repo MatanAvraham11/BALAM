@@ -12,9 +12,9 @@ type BalamRow = {
   "מקט ספק": string;
   "כמות נדרשת": number;
   "הוצאה": string;
-  "מספר הצעה": string;
+  "מספר בלמ": string;
   "לקוח": string;
-  "קניין": string;
+  "   לידי": string;
 };
 
 type BalamResponse = {
@@ -26,7 +26,15 @@ type BalamResponse = {
   csv_filename: string;
 };
 
-const COLUMNS = ["מספר", "מקט ספק", "כמות נדרשת", "הוצאה", "מספר הצעה", "לקוח", "קניין"];
+const COLUMNS = [
+  "מספר",
+  "מקט ספק",
+  "כמות נדרשת",
+  "הוצאה",
+  "מספר בלמ",
+  "לקוח",
+  "   לידי",
+];
 
 export default function BalamTab() {
   const [file, setFile] = useState<File | null>(null);
@@ -131,7 +139,7 @@ export default function BalamTab() {
             items={[
               { label: 'מספר בל"מ', value: data.balam_number },
               { label: "לקוח", value: data.customer_name || "—" },
-              { label: "קניין", value: data.buyer_name },
+              { label: "לידי", value: data.buyer_name },
             ]}
           />
 
