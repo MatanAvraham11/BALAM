@@ -3,6 +3,8 @@
 type Props = {
   title: string;
   description?: string;
+  /** נתיב לאייקון SVG תחת /public */
+  iconSrc: string;
   locked?: boolean;
   /** When locked: תג תחתון לפי סוג מוצר */
   lockedStatus?: "development" | "not_in_package";
@@ -10,7 +12,8 @@ type Props = {
 };
 
 /** Same height as primary CTA row so locked cards align with unlocked footers */
-const FOOTER_ROW_CLASS = "flex min-h-[44px] w-full shrink-0 items-center justify-center";
+const FOOTER_ROW_CLASS =
+  "flex min-h-[44px] w-full shrink-0 items-center justify-center";
 
 function LockIcon({ className }: { className?: string }) {
   return (
@@ -30,9 +33,61 @@ function LockIcon({ className }: { className?: string }) {
   );
 }
 
+function CardIcon({
+  iconSrc,
+  title,
+  locked,
+}: {
+  iconSrc: string;
+  title: string;
+  locked: boolean;
+}) {
+  return (
+    <div className="flex shrink-0 items-start gap-3">
+      <div className="relative shrink-0">
+        <div
+          className={
+            locked
+              ? "flex h-[3.25rem] w-[3.25rem] items-center justify-center rounded-2xl border border-stone-200/90 bg-stone-50/90 sm:h-14 sm:w-14"
+              : "flex h-[3.25rem] w-[3.25rem] items-center justify-center rounded-2xl border border-nativ-gold/20 bg-gradient-to-br from-white to-amber-50/40 shadow-sm ring-1 ring-nativ-gold/10 sm:h-14 sm:w-14"
+          }
+        >
+          <img
+            src={iconSrc}
+            alt=""
+            width={48}
+            height={48}
+            draggable={false}
+            className="h-9 w-9 object-contain sm:h-10 sm:w-10"
+          />
+        </div>
+        {locked ? (
+          <span
+            className="absolute -bottom-0.5 -left-0.5 flex h-6 w-6 items-center justify-center rounded-full border border-stone-200 bg-white shadow-sm"
+            title="נעול"
+            aria-hidden
+          >
+            <LockIcon className="h-3.5 w-3.5 text-gray-400" />
+          </span>
+        ) : null}
+      </div>
+      <h3
+        className={
+          locked
+            ? "min-w-0 flex-1 pt-0.5 text-lg font-bold leading-snug text-nativ-dark/55"
+            : "min-w-0 flex-1 pt-0.5 text-lg font-bold leading-snug text-nativ-dark"
+        }
+      >
+        {title}
+      </h3>
+    </div>
+  );
+}
+
 export default function ProductCard({
   title,
   description,
+  iconSrc,
   locked,
   lockedStatus = "development",
   onEnter,
@@ -44,14 +99,7 @@ export default function ProductCard({
         : "בפיתוח";
     return (
       <div className="flex h-full min-h-[280px] select-none flex-col rounded-xl border border-gray-200 bg-white/60 p-6 text-right shadow-sm backdrop-blur-sm">
-        <div className="flex shrink-0 items-start gap-2">
-          <LockIcon
-            className="mt-0.5 h-5 w-5 shrink-0 text-gray-400"
-          />
-          <h3 className="min-w-0 flex-1 text-lg font-bold text-nativ-dark/55">
-            {title}
-          </h3>
-        </div>
+        <CardIcon iconSrc={iconSrc} title={title} locked />
         {description ? (
           <p className="mt-3 min-h-0 flex-1 text-sm leading-relaxed text-nativ-dark/55">
             {description}
@@ -72,7 +120,7 @@ export default function ProductCard({
 
   return (
     <div className="flex h-full min-h-[280px] flex-col rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:border-nativ-gold/40 hover:shadow-md">
-      <h3 className="shrink-0 text-lg font-bold text-nativ-dark">{title}</h3>
+      <CardIcon iconSrc={iconSrc} title={title} locked={false} />
       <p className="mt-3 min-h-0 flex-1 text-sm leading-relaxed text-nativ-dark/70">
         {description}
       </p>

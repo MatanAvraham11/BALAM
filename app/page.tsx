@@ -12,12 +12,14 @@ type ActiveView = "dashboard" | "balam" | "drawing";
 const PRODUCTS = [
   {
     id: "balam" as const,
+    iconSrc: "/branding/product-icons/product-01-balam.svg",
     title: "מיפוי בל״מ מלא",
     description:
       "חילוץ, המרה וסידור של נתונים מתוך בל״מ לקובץ CSV במטרה לאפשר עבודה על נתונים מסודרים, הזנה מהירה למערכות, וצמצום עבודה ידנית.",
   },
   {
     id: "drawing" as const,
+    iconSrc: "/branding/product-icons/product-02-drawing.svg",
     title: "מיפוי שרטוטים מלא",
     description:
       "חילוץ, המרה וסימון של מידות מתוך שרטוטים כולל יצירת בלונים וטבלאות במטרה לאפשר חיבור בין שרטוט לנתונים, הזנה ישירה ל-ERP, והפעלת ייצור ללא עיבוד ידני.",
@@ -25,6 +27,7 @@ const PRODUCTS = [
 ];
 
 type LockedProduct = {
+  iconSrc: string;
   title: string;
   description: string;
   /** מוצרים 3–6: לא כלולים בחבילה */
@@ -33,40 +36,47 @@ type LockedProduct = {
 
 const LOCKED: LockedProduct[] = [
   {
+    iconSrc: "/branding/product-icons/product-03-brand-clean.svg",
     title: "מחיקת וניקוי מיתוג",
     notInPackage: true,
     description:
       "זיהוי, מחיקה וניקוי של מיתוג, טקסטים ו-Metadata מקבצים במטרה לאפשר העברת קבצים ללא חשיפת מקור, עבודה מול צד שלישי, ושמירה על סיווג.",
   },
   {
+    iconSrc: "/branding/product-icons/product-04-brand-fit.svg",
     title: "התאמת מיתוג",
     notInPackage: true,
     description:
       "מחיקה, החלפה והטמעה של מיתוג חדש בקבצים לפי דרישת לקוח במטרה לאפשר עבודה תחת מותג לקוח, ייצור דרך צד שלישי, והפעלה של White Label.",
   },
   {
+    iconSrc: "/branding/product-icons/product-05-work-orders.svg",
     title: "הפקת פקודות ייצור אוטומטית",
     notInPackage: true,
     description:
       "המרה, חלוקה ויצירה של פקודות עבודה מתוך נתונים ושרטוטים במטרה לאפשר תכנון משימות, הגדרת כמויות, וביצוע ייצור מסודר.",
   },
   {
+    iconSrc: "/branding/product-icons/product-06-validation.svg",
     title: "אימות נתונים ושרטוטים אוטומטי",
     notInPackage: true,
     description:
       "הצלבה, בדיקה וזיהוי חריגות בין CSV, שרטוטים ובלונים במטרה לאפשר איתור טעויות לפני ייצור, מניעת עבודה חוזרת, ושמירה על מקור אמת אחד.",
   },
   {
+    iconSrc: "/branding/product-icons/product-07-mobile.svg",
     title: "דיווח ייצור בנייד",
     description:
       "הזנה, עדכון וריכוז של נתונים בזמן אמת מריצפת הייצור. במטרה לאפשר מעקב, בקרה על כמויות וזמנים, וזיהוי עיכובים מידי.",
   },
   {
+    iconSrc: "/branding/product-icons/product-08-tenders.svg",
     title: "אוטומציית מכרזים (בל״מים)",
     description:
       "חילוץ, ניתוח והמרה של נתונים מתוך בל״מ במטרה לאפשר הכנת הצעות מחיר מהירה, עבודה על נתונים מסודרים, וצמצום טעויות ופספוסים.",
   },
   {
+    iconSrc: "/branding/product-icons/product-09-coatings-db.svg",
     title: "דאטה בייס ספקי ציפויים",
     description:
       "ניתוח, זיהוי והתאמת ספקים לציפויים מתוך שרטוטים במטרה לאפשר איתור ספקים רלוונטיים, שליחת בקשות להצעת מחיר, ובחירה מדויקת של ספק.",
@@ -109,6 +119,7 @@ export default function Home() {
               {PRODUCTS.map((p) => (
                 <div key={p.id} className="h-full min-h-0">
                   <ProductCard
+                    iconSrc={p.iconSrc}
                     title={p.title}
                     description={p.description}
                     onEnter={() => setView(p.id)}
@@ -118,6 +129,7 @@ export default function Home() {
               {LOCKED.map((p) => (
                 <div key={p.title} className="h-full min-h-0">
                   <ProductCard
+                    iconSrc={p.iconSrc}
                     title={p.title}
                     description={p.description}
                     locked
