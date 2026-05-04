@@ -36,11 +36,24 @@ export default function ProductCard({
 }: Props) {
   if (locked) {
     return (
-      <div className="flex h-full min-h-[280px] select-none flex-col rounded-xl border border-gray-200 bg-white/60 p-6 text-center shadow-sm backdrop-blur-sm">
-        <h3 className="shrink-0 text-lg font-bold text-nativ-dark/50">{title}</h3>
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 py-4">
-          <LockIcon className="h-8 w-8 text-gray-300" />
+      <div className="flex h-full min-h-[280px] select-none flex-col rounded-xl border border-gray-200 bg-white/60 p-6 text-right shadow-sm backdrop-blur-sm">
+        <div className="flex shrink-0 items-start gap-2">
+          <LockIcon
+            className="mt-0.5 h-5 w-5 shrink-0 text-gray-400"
+          />
+          <h3 className="min-w-0 flex-1 text-lg font-bold text-nativ-dark/55">
+            {title}
+          </h3>
         </div>
+        {description ? (
+          <p className="mt-3 min-h-0 flex-1 text-sm leading-relaxed text-nativ-dark/55">
+            {description}
+          </p>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center py-4">
+            <LockIcon className="h-8 w-8 text-gray-300" />
+          </div>
+        )}
         <div className={FOOTER_ROW_CLASS}>
           <span className="rounded-full bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-400">
             בפיתוח

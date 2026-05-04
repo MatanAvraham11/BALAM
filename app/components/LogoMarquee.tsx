@@ -13,7 +13,7 @@ function LogoRow() {
       {PARTNERS.map(({ src, alt }) => (
         <div
           key={src}
-          className="flex shrink-0 items-center justify-center px-6 sm:px-10 md:px-14"
+          className="flex shrink-0 items-center justify-center px-7 sm:px-12 md:px-16"
         >
           <img
             src={src}
@@ -21,7 +21,7 @@ function LogoRow() {
             loading="lazy"
             decoding="async"
             draggable={false}
-            className="h-10 w-auto max-w-[9rem] object-contain object-center grayscale transition-[filter,opacity] duration-300 ease-out hover:grayscale-0 sm:h-12 md:h-14 lg:h-16 sm:max-w-[11rem] md:max-w-none"
+            className="h-[3.75rem] w-auto max-w-[13.5rem] object-contain object-center grayscale transition-[filter,opacity] duration-300 ease-out hover:grayscale-0 sm:h-[4.5rem] md:h-[5.25rem] lg:h-24 sm:max-w-[16.5rem] md:max-w-none"
           />
         </div>
       ))}
