@@ -269,7 +269,8 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
         buf = io.StringIO()
         # Leading tab forces Excel to treat cell as text (avoids scientific notation).
         df["מספר בלמ"] = "\t" + str(order.balam_number)
-        df.to_csv(buf, index=False)
+        # CRLF line endings for Windows/Excel compatibility.
+        df.to_csv(buf, index=False, lineterminator="\r\n")
         csv_bytes = buf.getvalue().encode("windows-1255", errors="replace")
 
         return JSONResponse(content={

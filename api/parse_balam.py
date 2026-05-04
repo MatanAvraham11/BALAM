@@ -317,7 +317,8 @@ def export_to_csv(order: PurchaseOrder, output_path: str | Path) -> Path:
     df = pd.DataFrame(rows)
     out = Path(output_path)
 
-    with open(out, "w", encoding="utf-8-sig", newline="") as f:
+    # newline='\r\n' makes Python translate any '\n' written to CRLF (Windows/Excel).
+    with open(out, "w", encoding="utf-8-sig", newline="\r\n") as f:
         f.write(f'מספר בל"מ: {order.balam_number}\n')
         f.write(f"לקוח: {order.customer_name}\n")
         f.write(f"לידי: {order.buyer_name}\n")
