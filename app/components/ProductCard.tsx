@@ -4,6 +4,8 @@ type Props = {
   title: string;
   description?: string;
   locked?: boolean;
+  /** When locked: תג תחתון לפי סוג מוצר */
+  lockedStatus?: "development" | "not_in_package";
   onEnter?: () => void;
 };
 
@@ -32,9 +34,14 @@ export default function ProductCard({
   title,
   description,
   locked,
+  lockedStatus = "development",
   onEnter,
 }: Props) {
   if (locked) {
+    const badgeText =
+      lockedStatus === "not_in_package"
+        ? "לא נכללים בחבילה שלך"
+        : "בפיתוח";
     return (
       <div className="flex h-full min-h-[280px] select-none flex-col rounded-xl border border-gray-200 bg-white/60 p-6 text-right shadow-sm backdrop-blur-sm">
         <div className="flex shrink-0 items-start gap-2">
@@ -55,8 +62,8 @@ export default function ProductCard({
           </div>
         )}
         <div className={FOOTER_ROW_CLASS}>
-          <span className="rounded-full bg-gray-100 px-3 py-1.5 text-xs font-semibold text-gray-400">
-            בפיתוח
+          <span className="max-w-[min(100%,18rem)] rounded-full bg-gray-100 px-3 py-2 text-center text-[11px] font-semibold leading-snug text-gray-500 sm:text-xs">
+            {badgeText}
           </span>
         </div>
       </div>

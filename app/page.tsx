@@ -24,24 +24,35 @@ const PRODUCTS = [
   },
 ];
 
-const LOCKED = [
+type LockedProduct = {
+  title: string;
+  description: string;
+  /** מוצרים 3–6: לא כלולים בחבילה */
+  notInPackage?: boolean;
+};
+
+const LOCKED: LockedProduct[] = [
   {
     title: "מחיקת וניקוי מיתוג",
+    notInPackage: true,
     description:
       "זיהוי, מחיקה וניקוי של מיתוג, טקסטים ו-Metadata מקבצים במטרה לאפשר העברת קבצים ללא חשיפת מקור, עבודה מול צד שלישי, ושמירה על סיווג.",
   },
   {
     title: "התאמת מיתוג",
+    notInPackage: true,
     description:
       "מחיקה, החלפה והטמעה של מיתוג חדש בקבצים לפי דרישת לקוח במטרה לאפשר עבודה תחת מותג לקוח, ייצור דרך צד שלישי, והפעלה של White Label.",
   },
   {
     title: "הפקת פקודות ייצור אוטומטית",
+    notInPackage: true,
     description:
       "המרה, חלוקה ויצירה של פקודות עבודה מתוך נתונים ושרטוטים במטרה לאפשר תכנון משימות, הגדרת כמויות, וביצוע ייצור מסודר.",
   },
   {
     title: "אימות נתונים ושרטוטים אוטומטי",
+    notInPackage: true,
     description:
       "הצלבה, בדיקה וזיהוי חריגות בין CSV, שרטוטים ובלונים במטרה לאפשר איתור טעויות לפני ייצור, מניעת עבודה חוזרת, ושמירה על מקור אמת אחד.",
   },
@@ -88,7 +99,7 @@ export default function Home() {
   }
 
   return (
-    <div className="flex min-h-screen w-full flex-col">
+    <div className="flex w-full flex-1 flex-col">
       <SiteNav />
 
       <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-4 sm:px-6 lg:px-8">
@@ -110,6 +121,7 @@ export default function Home() {
                     title={p.title}
                     description={p.description}
                     locked
+                    lockedStatus={p.notInPackage ? "not_in_package" : "development"}
                   />
                 </div>
               ))}
