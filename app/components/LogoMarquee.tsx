@@ -7,10 +7,6 @@ const PARTNERS = [
   { src: "/branding/partners/manufuture.svg", alt: "ManuFuture" },
 ] as const;
 
-/** רוחב זהה ל-gap בין לוגואים — מפריד גם בין סוף מחזור לתחילת הכפול */
-const LOOP_SPACER =
-  "shrink-0 w-14 sm:w-20 md:w-24 lg:w-28";
-
 function LogoRow() {
   return (
     <>
@@ -33,15 +29,18 @@ function LogoRow() {
   );
 }
 
-/** מחצית מסלול: לוגואים + רווח סיום (זהה לריווח בין לוגואים) ללולאה חלקה */
-function MarqueeHalf({ ariaHidden }: { ariaHidden?: boolean }) {
+/** אחת משתי הכפילויות ללולאה; מרווח קבוע אחרי השורה כדי שלא ייצמדו לוגו↔לוגו במפר הלולאה */
+function LogoTrack({ duplicate }: { duplicate?: boolean }) {
   return (
     <div
-      className="flex w-max shrink-0 items-center gap-14 sm:gap-20 md:gap-24 lg:gap-28"
-      aria-hidden={ariaHidden}
+      className="flex shrink-0 items-center gap-16 sm:gap-24 md:gap-32 lg:gap-40"
+      aria-hidden={duplicate ? true : undefined}
     >
       <LogoRow />
-      <div className={LOOP_SPACER} aria-hidden />
+      <div
+        className="h-1 shrink-0 w-12 sm:w-16 md:w-20 lg:w-24"
+        aria-hidden
+      />
     </div>
   );
 }
@@ -49,24 +48,24 @@ function MarqueeHalf({ ariaHidden }: { ariaHidden?: boolean }) {
 export default function LogoMarquee() {
   return (
     <section
-      className="mt-12 w-full overflow-x-hidden border-t border-stone-200/80 pt-10 sm:mt-14 sm:pt-12"
+      className="mt-12 w-full border-t border-stone-200/80 pt-10 sm:mt-14 sm:pt-12"
       aria-labelledby="partners-marquee-heading"
     >
       <h2
         id="partners-marquee-heading"
-        className="mx-auto mb-8 max-w-7xl px-4 text-center text-xl font-semibold tracking-tight text-nativ-dark sm:mb-10 sm:px-6 sm:text-2xl md:text-3xl lg:px-8"
+        className="mb-8 text-center text-xl font-semibold tracking-tight text-nativ-dark sm:mb-10 sm:text-2xl md:text-3xl"
       >
         <span className="bg-gradient-to-l from-nativ-gold/90 to-nativ-gold bg-clip-text text-transparent">
           כבר משתמשים במוצרים שלנו
         </span>
       </h2>
 
-      {/* פס ברוחב מסך מלא (breakout מתוך max-w של העמוד) */}
-      <div className="relative left-1/2 w-screen max-w-[100vw] -translate-x-1/2">
-        <div
-          className="relative overflow-hidden bg-gray-50 py-7 sm:py-9 md:py-10"
-          dir="ltr"
-        >
+      <div
+        className="relative left-1/2 w-screen max-w-[100vw] -translate-x-1/2"
+        dir="ltr"
+      >
+        <div className="relative flex items-center justify-center overflow-hidden bg-gray-50 py-7 sm:py-9 md:py-10">
+          {/* Fade מקצוות — תואם ל־bg-gray-50 של הפס */}
           <div
             className="pointer-events-none absolute inset-y-0 left-0 z-10 w-20 bg-gradient-to-r from-gray-50 from-[12%] via-gray-50/65 to-transparent sm:w-28 md:w-40 md:from-[8%]"
             aria-hidden
@@ -77,8 +76,8 @@ export default function LogoMarquee() {
           />
 
           <div className="flex w-max animate-logo-marquee">
-            <MarqueeHalf />
-            <MarqueeHalf ariaHidden />
+            <LogoTrack />
+            <LogoTrack duplicate />
           </div>
         </div>
       </div>
