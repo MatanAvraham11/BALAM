@@ -58,6 +58,15 @@ LABEL_FONTSIZE = 7
 LABEL_MARGIN = 4.0
 _BALLOON_GAP = 2.0  # extra clearance between balloons (PDF pt)
 
+# Span merging: a dimension and its tolerance are often two adjacent spans.
+_DIM_MERGE_Y_TOL = 1.5      # max diff between vertical centers (pt)
+_DIM_MERGE_GAP_X = 6.0      # max horizontal gap between spans (pt)
+
+# Leader line drawn when balloon ends up far from the dimension.
+_LEADER_DISTANCE_FACTOR = 3.0  # threshold = factor * base_offset
+_LEADER_LINE_WIDTH = 0.4
+_LEADER_LINE_COLOR = (0.45, 0.25, 0.0)
+
 # Title-block exclusion zone (fraction of page dimensions)
 _TITLE_BLOCK_X_FRAC = 0.62
 _TITLE_BLOCK_Y_FRAC = 0.72
@@ -387,11 +396,67 @@ def _looks_like_dimension(text: str) -> bool:
     return bool(_RE_DIM_HINT.search(text))
 
 
-def _detect_dimensions(spans: list[_Span], note_bboxes: set[tuple[float, float, float, float]]) -> list[FAIItem]:
-    items: list[FAIItem] = []
-    for sp in spans:
-        if sp.bbox in note_bboxes:
+def _merge_dim_spans(spans: list[_Span]) -> list[_Span]:
+    """Merge horizontally adjacent spans that share a vertical baseline.
+
+    Engineering drawings frequently split a dimension and its tolerance
+    into two separate text spans (e.g. ``"10.5"`` and ``"±0.1"``). Treating
+    them as a single ``FAIItem`` lets the rest of the pipeline classify
+    correctly and lets the balloon placer use a unified bbox so the leader
+    points at the full dimension instead of just the nominal half.
+    """
+    if not spans:
+        return spans
+
+    sorted_spans = sorted(
+        spans,
+        key=lambda s: (s.page_index, (s.bbox[1] + s.bbox[3]) / 2, s.bbox[0]),
+    )
+
+    out: list[_Span] = []
+    cur: _Span | None = None
+
+    for sp in sorted_spans:
+        if cur is None:
+            cur = sp
             continue
+
+        cy_a = (cur.bbox[1] + cur.bbox[3]) / 2
+        cy_b = (sp.bbox[1] + sp.bbox[3]) / 2
+        same_line = (
+            sp.page_index == cur.page_index
+            and abs(cy_a - cy_b) <= _DIM_MERGE_Y_TOL
+        )
+        gap = sp.bbox[0] - cur.bbox[2]
+
+        if same_line and 0.0 <= gap <= _DIM_MERGE_GAP_X:
+            cur = _Span(
+                f"{cur.text} {sp.text}",
+                (
+                    min(cur.bbox[0], sp.bbox[0]),
+                    min(cur.bbox[1], sp.bbox[1]),
+                    max(cur.bbox[2], sp.bbox[2]),
+                    max(cur.bbox[3], sp.bbox[3]),
+                ),
+                max(cur.size, sp.size),
+                cur.page_index,
+            )
+        else:
+            out.append(cur)
+            cur = sp
+
+    if cur is not None:
+        out.append(cur)
+
+    return out
+
+
+def _detect_dimensions(spans: list[_Span], note_bboxes: set[tuple[float, float, float, float]]) -> list[FAIItem]:
+    candidates = [sp for sp in spans if sp.bbox not in note_bboxes]
+    candidates = _merge_dim_spans(candidates)
+
+    items: list[FAIItem] = []
+    for sp in candidates:
         if _RE_DOC_STAMP.search(sp.text):
             continue
         if not _looks_like_dimension(sp.text):
@@ -453,30 +518,100 @@ def _rects_overlap(
     return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
 
 
+def _bbox_edge_distance(
+    cx: float,
+    cy: float,
+    bbox: tuple[float, float, float, float],
+) -> float:
+    """Shortest distance from point (cx, cy) to the closest edge of bbox."""
+    bx0, by0, bx1, by1 = bbox
+    dx = max(bx0 - cx, 0.0, cx - bx1)
+    dy = max(by0 - cy, 0.0, cy - by1)
+    return math.hypot(dx, dy)
+
+
+def _closest_point_on_bbox(
+    cx: float,
+    cy: float,
+    bbox: tuple[float, float, float, float],
+) -> tuple[float, float]:
+    """Project (cx, cy) onto bbox: clamp coordinates to the bbox extents."""
+    bx0, by0, bx1, by1 = bbox
+    return (max(bx0, min(bx1, cx)), max(by0, min(by1, cy)))
+
+
 def _place_balloon_center(
     item_bbox: tuple[float, float, float, float],
     all_text_bboxes: list[tuple[float, float, float, float]],
     placed_centers: list[tuple[float, float]],
     pw: float,
     ph: float,
-) -> tuple[float, float]:
-    """Find a balloon centre that overlaps neither text nor existing balloons."""
+) -> tuple[float, float, tuple[float, float] | None]:
+    """Find a balloon centre that overlaps neither text nor existing balloons.
+
+    Returns ``(cx, cy, leader_anchor)``. ``leader_anchor`` is the closest
+    point on ``item_bbox`` when the balloon was forced far enough that a
+    visual link is needed, otherwise ``None``. The caller is expected to
+    draw a thin leader line from the balloon's circumference to that point.
+
+    Strategy
+    --------
+    The search is **edge-anchored** rather than centre-anchored. For each
+    of 8 outward directions we start from the corresponding edge / corner
+    of ``item_bbox`` and step outward by ``base_offset + (itry-1) * step``.
+    Engineering balloons sit *next to* the dimension, not centred on it,
+    so the right and left mid-edges are tried first.
+
+    Fallback scoring (when every candidate collides)
+    -----------------------------------------------
+    For each colliding candidate at point ``(cx, cy)`` we compute::
+
+        v_outside = max(0, max(y0 - cy, cy - y1))
+        h_aligned = (y0 <= cy <= y1)
+        dist      = (cx - mcx)^2 + (cy - mcy)^2
+        score     = total_inter * 500
+                  + dist
+                  + 2.0 * v_outside^2          # vertical penalty
+                  + (-200 if h_aligned else 0) # horizontal-alignment bonus
+
+    ``total_inter`` is summed text-overlap area (collision is dominant).
+    ``dist`` keeps placements close to the dimension. ``v_outside^2``
+    pushes back against strictly above / below positions; ``h_aligned``
+    grants a flat negative score whenever the balloon centre sits within
+    the bbox vertical band, mirroring how a draftsman positions balloons
+    along the dimension's line.
+    """
     x0, y0, x1, y1 = item_bbox
     mcx = (x0 + x1) / 2
     mcy = (y0 + y1) / 2
     eff = CIRCLE_RADIUS + 2.0
     balloon_dist = 2 * CIRCLE_RADIUS + _BALLOON_GAP
-    base = max((x1 - x0) * 0.5 + CIRCLE_RADIUS + 6, 18.0)
+    base_offset = CIRCLE_RADIUS + 6.0
+    leader_threshold = base_offset * _LEADER_DISTANCE_FACTOR
+
+    sqrt2 = math.sqrt(0.5)
+    # Each anchor: (anchor_x, anchor_y, dir_x, dir_y).
+    # Right / left mid-edges first (preferred for engineering drawings),
+    # then top / bottom mid-edges, then corners.
+    anchors: list[tuple[float, float, float, float]] = [
+        (x1, mcy,  1.0,  0.0),
+        (x0, mcy, -1.0,  0.0),
+        (mcx, y0,  0.0, -1.0),
+        (mcx, y1,  0.0,  1.0),
+        (x1, y0,   sqrt2, -sqrt2),
+        (x0, y0,  -sqrt2, -sqrt2),
+        (x1, y1,   sqrt2,  sqrt2),
+        (x0, y1,  -sqrt2,  sqrt2),
+    ]
 
     best: tuple[float, float] | None = None
     best_score = float("inf")
 
     for itry in range(1, 100):
-        radius = base + itry * 1.5
-        for a in range(8):
-            ang = a * (2 * math.pi / 8) - math.pi / 2
-            cx = mcx + radius * math.cos(ang)
-            cy = mcy + radius * math.sin(ang)
+        offset = base_offset + (itry - 1) * 1.5
+        for ax, ay, dx, dy in anchors:
+            cx = ax + dx * offset
+            cy = ay + dy * offset
             cx = max(eff, min(pw - eff, cx))
             cy = max(eff, min(ph - eff, cy))
             cb = (cx - eff, cy - eff, cx + eff, cy + eff)
@@ -498,15 +633,36 @@ def _place_balloon_center(
                     total_inter += balloon_dist * balloon_dist
 
             if not hit:
-                return (cx, cy)
+                edge_dist = _bbox_edge_distance(cx, cy, item_bbox)
+                leader = (
+                    _closest_point_on_bbox(cx, cy, item_bbox)
+                    if edge_dist > leader_threshold
+                    else None
+                )
+                return (cx, cy, leader)
+
+            v_outside = max(0.0, max(y0 - cy, cy - y1))
+            h_aligned = y0 <= cy <= y1
 
             dist = (cx - mcx) ** 2 + (cy - mcy) ** 2
-            score = total_inter * 500.0 + dist
+            v_penalty = (v_outside * v_outside) * 2.0
+            h_bonus = -200.0 if h_aligned else 0.0
+
+            score = total_inter * 500.0 + dist + v_penalty + h_bonus
             if score < best_score:
                 best_score = score
                 best = (cx, cy)
 
-    return best if best is not None else (max(eff, mcx + base), max(eff, mcy - base))
+    if best is None:
+        best = (max(eff, x1 + base_offset), max(eff, mcy))
+
+    edge_dist = _bbox_edge_distance(best[0], best[1], item_bbox)
+    leader = (
+        _closest_point_on_bbox(best[0], best[1], item_bbox)
+        if edge_dist > leader_threshold
+        else None
+    )
+    return (best[0], best[1], leader)
 
 
 def _nudge_note_center(
@@ -546,6 +702,7 @@ def _annotate_pdf(
         bboxes = page_text_bboxes[item.page_index] if item.page_index < len(page_text_bboxes) else []
         placed = placed_by_page.setdefault(item.page_index, [])
 
+        leader_anchor: tuple[float, float] | None = None
         if item.dimension_type == "Note":
             cx = item.bbox[0] - _NOTE_BALLOON_OFFSET_X
             cy = (item.bbox[1] + item.bbox[3]) / 2
@@ -554,9 +711,27 @@ def _annotate_pdf(
             cy = max(eff, min(ph - eff, cy))
             cx, cy = _nudge_note_center(cx, cy, placed, pw, ph)
         else:
-            cx, cy = _place_balloon_center(item.bbox, bboxes, placed, pw, ph)
+            cx, cy, leader_anchor = _place_balloon_center(
+                item.bbox, bboxes, placed, pw, ph,
+            )
 
         placed.append((cx, cy))
+
+        if leader_anchor is not None:
+            ax, ay = leader_anchor
+            dx = ax - cx
+            dy = ay - cy
+            d = math.hypot(dx, dy)
+            if d > CIRCLE_RADIUS + 0.5:
+                sx = cx + dx / d * CIRCLE_RADIUS
+                sy = cy + dy / d * CIRCLE_RADIUS
+                leader_shape = page.new_shape()
+                leader_shape.draw_line(fitz.Point(sx, sy), fitz.Point(ax, ay))
+                leader_shape.finish(
+                    color=_LEADER_LINE_COLOR,
+                    width=_LEADER_LINE_WIDTH,
+                )
+                leader_shape.commit()
 
         shape = page.new_shape()
         shape.draw_circle(fitz.Point(cx, cy), CIRCLE_RADIUS)
