@@ -67,6 +67,14 @@ _LEADER_DISTANCE_FACTOR = 3.0  # threshold = factor * base_offset
 _LEADER_LINE_WIDTH = 0.4
 _LEADER_LINE_COLOR = (0.45, 0.25, 0.0)
 
+# Vector-graphics avoidance.
+# Drawings whose bbox covers most of the page (frame/border, hatching plates)
+# are filtered out so they don't block every balloon candidate.
+_DRAWING_MAX_AREA_FRAC = 0.55     # reject single drawings covering > 55% of page area
+_DRAWING_MAX_DIM_FRAC = 0.90      # reject bboxes spanning > 90% of width AND > 90% of height
+_DRAWING_MIN_DIM = 0.5            # ignore degenerate / zero-size paths
+_DRAWING_PADDING = 0.5            # widen thin lines so cb (the balloon box) actually intersects them
+
 # Title-block exclusion zone (fraction of page dimensions)
 _TITLE_BLOCK_X_FRAC = 0.62
 _TITLE_BLOCK_Y_FRAC = 0.72
@@ -518,6 +526,70 @@ def _rects_overlap(
     return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
 
 
+def _extract_drawing_bboxes(
+    page: fitz.Page,
+    pw: float,
+    ph: float,
+) -> list[tuple[float, float, float, float]]:
+    """Collect bounding boxes of vector graphics on ``page``.
+
+    Filters
+    -------
+    * **Page-frame removal:** drawings that cover ``> _DRAWING_MAX_DIM_FRAC``
+      of the page in *both* width and height (i.e. ~the page itself), or
+      whose total area exceeds ``_DRAWING_MAX_AREA_FRAC`` of the page,
+      are skipped — those would otherwise mark the entire page as occupied.
+    * **Degenerate paths:** zero-size or sub-pixel paths are skipped.
+    * **Thin-line padding:** very thin paths (e.g. dimension lines) are
+      padded by ``_DRAWING_PADDING`` so the candidate balloon rectangle
+      can actually register a collision with them.
+
+    Returns the filtered, padded bounding boxes.
+    """
+    boxes: list[tuple[float, float, float, float]] = []
+    page_area = max(pw * ph, 1.0)
+
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return boxes
+
+    for d in drawings:
+        rect = d.get("rect")
+        if rect is None:
+            continue
+        try:
+            x0, y0, x1, y1 = float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)
+        except Exception:
+            continue
+
+        if x1 < x0:
+            x0, x1 = x1, x0
+        if y1 < y0:
+            y0, y1 = y1, y0
+
+        w = x1 - x0
+        h = y1 - y0
+        if w < _DRAWING_MIN_DIM and h < _DRAWING_MIN_DIM:
+            continue
+
+        if w >= pw * _DRAWING_MAX_DIM_FRAC and h >= ph * _DRAWING_MAX_DIM_FRAC:
+            continue
+        if (w * h) >= page_area * _DRAWING_MAX_AREA_FRAC:
+            continue
+
+        if w < _DRAWING_PADDING:
+            x0 -= _DRAWING_PADDING
+            x1 += _DRAWING_PADDING
+        if h < _DRAWING_PADDING:
+            y0 -= _DRAWING_PADDING
+            y1 += _DRAWING_PADDING
+
+        boxes.append((x0, y0, x1, y1))
+
+    return boxes
+
+
 def _bbox_edge_distance(
     cx: float,
     cy: float,
@@ -546,40 +618,44 @@ def _place_balloon_center(
     placed_centers: list[tuple[float, float]],
     pw: float,
     ph: float,
+    all_drawing_bboxes: list[tuple[float, float, float, float]] | None = None,
 ) -> tuple[float, float, tuple[float, float] | None]:
-    """Find a balloon centre that overlaps neither text nor existing balloons.
+    """Find a balloon centre that avoids text, balloons, and (softly) drawings.
 
     Returns ``(cx, cy, leader_anchor)``. ``leader_anchor`` is the closest
     point on ``item_bbox`` when the balloon was forced far enough that a
     visual link is needed, otherwise ``None``. The caller is expected to
     draw a thin leader line from the balloon's circumference to that point.
 
-    Strategy
-    --------
-    The search is **edge-anchored** rather than centre-anchored. For each
-    of 8 outward directions we start from the corresponding edge / corner
-    of ``item_bbox`` and step outward by ``base_offset + (itry-1) * step``.
-    Engineering balloons sit *next to* the dimension, not centred on it,
-    so the right and left mid-edges are tried first.
+    Collision model
+    ---------------
+    * **Text** and **other balloons** are *hard* obstacles — overlapping
+      them sets ``hit = True`` and disqualifies the candidate from being
+      taken as a clean placement.
+    * **Drawing geometry** (lines, arrows, paths from
+      :func:`_extract_drawing_bboxes`) is a *soft* obstacle. Overlapping
+      it accumulates ``drawing_inter`` but does **not** disqualify the
+      candidate. In dense drawings every position crosses some line, so
+      we still want to pick the one with the least line interference.
 
     Fallback scoring (when every candidate collides)
     -----------------------------------------------
-    For each colliding candidate at point ``(cx, cy)`` we compute::
+    ::
 
-        v_outside = max(0, max(y0 - cy, cy - y1))
-        h_aligned = (y0 <= cy <= y1)
-        dist      = (cx - mcx)^2 + (cy - mcy)^2
-        score     = total_inter * 500
-                  + dist
-                  + 2.0 * v_outside^2          # vertical penalty
-                  + (-200 if h_aligned else 0) # horizontal-alignment bonus
+        v_outside    = max(0, max(y0 - cy, cy - y1))
+        h_aligned    = (y0 <= cy <= y1)
+        dist         = (cx - mcx)^2 + (cy - mcy)^2
+        score        = total_inter   * 500       # text overlap (dominant)
+                     + drawing_inter * 50        # drawing overlap (soft)
+                     + dist                      # closeness to dimension
+                     + 2.0 * v_outside^2         # discourage above/below
+                     + (-200 if h_aligned else 0)# horizontal-alignment bonus
 
     ``total_inter`` is summed text-overlap area (collision is dominant).
-    ``dist`` keeps placements close to the dimension. ``v_outside^2``
-    pushes back against strictly above / below positions; ``h_aligned``
-    grants a flat negative score whenever the balloon centre sits within
-    the bbox vertical band, mirroring how a draftsman positions balloons
-    along the dimension's line.
+    ``drawing_inter`` is summed area shared with vector graphics. Its
+    weight (``50``) is intentionally an order of magnitude below the text
+    weight so the algorithm prefers crossing a leader line over
+    overlapping a real dimension or another balloon.
     """
     x0, y0, x1, y1 = item_bbox
     mcx = (x0 + x1) / 2
@@ -618,6 +694,8 @@ def _place_balloon_center(
 
             hit = False
             total_inter = 0.0
+            drawing_inter = 0.0
+
             for tb in all_text_bboxes:
                 if _rects_overlap(cb, tb):
                     hit = True
@@ -632,7 +710,14 @@ def _place_balloon_center(
                     hit = True
                     total_inter += balloon_dist * balloon_dist
 
-            if not hit:
+            if all_drawing_bboxes:
+                for db in all_drawing_bboxes:
+                    if _rects_overlap(cb, db):
+                        ix = max(0.0, min(cb[2], db[2]) - max(cb[0], db[0]))
+                        iy = max(0.0, min(cb[3], db[3]) - max(cb[1], db[1]))
+                        drawing_inter += ix * iy
+
+            if not hit and drawing_inter == 0.0:
                 edge_dist = _bbox_edge_distance(cx, cy, item_bbox)
                 leader = (
                     _closest_point_on_bbox(cx, cy, item_bbox)
@@ -648,7 +733,13 @@ def _place_balloon_center(
             v_penalty = (v_outside * v_outside) * 2.0
             h_bonus = -200.0 if h_aligned else 0.0
 
-            score = total_inter * 500.0 + dist + v_penalty + h_bonus
+            score = (
+                total_inter * 500.0
+                + drawing_inter * 50.0
+                + dist
+                + v_penalty
+                + h_bonus
+            )
             if score < best_score:
                 best_score = score
                 best = (cx, cy)
@@ -691,6 +782,7 @@ def _annotate_pdf(
     doc: fitz.Document,
     items: list[FAIItem],
     page_text_bboxes: list[list[tuple[float, float, float, float]]],
+    page_drawing_bboxes: list[list[tuple[float, float, float, float]]] | None = None,
 ) -> bytes:
     placed_by_page: dict[int, list[tuple[float, float]]] = {}
 
@@ -700,6 +792,9 @@ def _annotate_pdf(
         page = doc[item.page_index]
         pw, ph = page.rect.width, page.rect.height
         bboxes = page_text_bboxes[item.page_index] if item.page_index < len(page_text_bboxes) else []
+        drawing_bboxes: list[tuple[float, float, float, float]] = []
+        if page_drawing_bboxes is not None and item.page_index < len(page_drawing_bboxes):
+            drawing_bboxes = page_drawing_bboxes[item.page_index]
         placed = placed_by_page.setdefault(item.page_index, [])
 
         leader_anchor: tuple[float, float] | None = None
@@ -712,7 +807,7 @@ def _annotate_pdf(
             cx, cy = _nudge_note_center(cx, cy, placed, pw, ph)
         else:
             cx, cy, leader_anchor = _place_balloon_center(
-                item.bbox, bboxes, placed, pw, ph,
+                item.bbox, bboxes, placed, pw, ph, drawing_bboxes,
             )
 
         placed.append((cx, cy))
@@ -789,6 +884,7 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
     all_notes: list[FAIItem] = []
     all_dims: list[FAIItem] = []
     page_text_bboxes: list[list[tuple[float, float, float, float]]] = []
+    page_drawing_bboxes: list[list[tuple[float, float, float, float]]] = []
 
     for page_idx in range(len(doc)):
         page = doc[page_idx]
@@ -797,6 +893,7 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
 
         raw_spans = _extract_spans(page, page_idx)
         page_text_bboxes.append([sp.bbox for sp in raw_spans])
+        page_drawing_bboxes.append(_extract_drawing_bboxes(page, pw, ph))
         spans = _filter_spans(raw_spans, pw, ph)
 
         tol_hdr = _find_tol_header(raw_spans, page_idx, ph)
@@ -815,7 +912,9 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
     items = _assign_numbers(all_notes, all_dims, page_sizes)
     result = FAIResult(items=items, page_sizes=page_sizes)
 
-    annotated_bytes = _annotate_pdf(doc, items, page_text_bboxes)
+    annotated_bytes = _annotate_pdf(
+        doc, items, page_text_bboxes, page_drawing_bboxes,
+    )
     doc.close()
     return result, annotated_bytes
 
