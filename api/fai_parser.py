@@ -62,22 +62,21 @@ _BALLOON_GAP = 2.0  # extra clearance between balloons (PDF pt)
 _DIM_MERGE_Y_TOL = 1.5      # max diff between vertical centers (pt)
 _DIM_MERGE_GAP_X = 6.0      # max horizontal gap between spans (pt)
 
-# Leader line from balloon to dimension when centre sits far from item_bbox edge.
+# Leader line: thin black stroke from balloon rim to nearest point on dimension bbox when balloon sits far from item centre.
 _LEADER_LINE_WIDTH = 0.4
-_LEADER_LINE_COLOR = (0.45, 0.25, 0.0)
-_LEADER_DISTANCE_FROM_DIM_MULT = 2.5  # draw leader if edge distance > CIRCLE_RADIUS × this
+_LEADER_LINE_COLOR = (0.0, 0.0, 0.0)
+_LEADER_DISTANCE_FROM_CENTER_MULT = 2.5  # leader if ‖(cx,cy)-(mcx,mcy)‖ > CIRCLE_RADIUS × this
 
 # Vector-graphics avoidance — balloon scoring weights (overlap areas × weight).
 _TEXT_OVERLAP_WEIGHT = 500.0       # text / own dimension / other balloons (hard)
-_DRAWING_OVERLAP_WEIGHT = 300.0    # vector strokes — high penalty (was 70)
+_DRAWING_OVERLAP_WEIGHT = 300.0    # vector strokes — strict penalty
 
-# Grid search around dimension centre (replace radial / directional sweep).
-_GRID_MAX_RADIUS_FACTOR = 6.0      # search radius = factor × CIRCLE_RADIUS (≈5–6× as requested)
-_GRID_STEP_DIVISOR = 2.0           # step size = CIRCLE_RADIUS / divisor (half-radius spacing)
+# Grid search: expand item_bbox by MAX_DIST on every side (anchored to dimension, not only mcx/mcy).
+_GRID_EXPAND_FACTOR = 6.0          # MAX_DIST = factor × CIRCLE_RADIUS
+_GRID_STEP_DIVISOR = 2.0          # step = CIRCLE_RADIUS / divisor (half-radius spacing)
 
-# Prefer snapping balloon centres onto horizontal/vertical lines through dimension edges.
-_EDGE_ALIGN_EPS = 2.0              # pt — within this distance of x0/x1 or y0/y1 line
-_EDGE_ALIGN_BONUS = -400.0         # negative score = bonus for edge-aligned candidates
+# Engineer-style snap: balloon centre shares the horizontal band OR vertical band of the dimension bbox.
+_EDGE_BAND_BONUS = -500.0         # when (y0≤cy≤y1) or (x0≤cx≤x1)
 
 # Drawings whose bbox is essentially the page border (engineering frame).
 _PAGE_BORDER_W_FRAC = 0.90        # ≥ 90% of page width …
@@ -630,39 +629,41 @@ def _place_balloon_center(
     ph: float,
     all_drawing_bboxes: list[tuple[float, float, float, float]] | None = None,
 ) -> tuple[float, float, tuple[float, float] | None]:
-    """Find a balloon centre using **dense grid search** + weighted overlap scores.
+    """Place a balloon via **grid search** over a padded ``item_bbox`` region.
 
-    Returns ``(cx, cy, leader_anchor)``. ``leader_anchor`` is the closest point
-    on ``item_bbox`` when the chosen centre is farther than
-    ``CIRCLE_RADIUS * _LEADER_DISTANCE_FROM_DIM_MULT`` from the dimension's
-    edges (thin leader line drawn by :func:`_annotate_pdf`).
+    Returns ``(cx, cy, leader_anchor)``. A leader anchor is returned when the
+    winning balloon centre lies farther than ``CIRCLE_RADIUS *
+    _LEADER_DISTANCE_FROM_CENTER_MULT`` from ``(mcx, mcy)`` — then
+    :func:`_annotate_pdf` draws a black leader from the balloon rim to the
+    nearest point on ``item_bbox``.
 
-    Search
-    ------
-    Candidates fill a square centred on ``(mcx, mcy)`` with half-side
-    ``CIRCLE_RADIUS * _GRID_MAX_RADIUS_FACTOR``, clipped to the drawable page,
-    stepped by ``CIRCLE_RADIUS / _GRID_STEP_DIVISOR``. Every lattice point is
-    scored; the **global minimum** wins (no early exit).
+    Search region
+    -------------
+    Grid bounds are the dimension rectangle expanded by ``MAX_DIST =
+    CIRCLE_RADIUS * _GRID_EXPAND_FACTOR`` on **each** side::
+
+        [x0 - MAX_DIST, y0 - MAX_DIST, x1 + MAX_DIST, y1 + MAX_DIST]
+
+    clipped to the drawable page. Step size is ``CIRCLE_RADIUS /
+    _GRID_STEP_DIVISOR``. Every lattice point is scored; the **global**
+    minimum wins.
 
     Score (lower is better)
     -----------------------
     ::
 
-        score = total_inter   * _TEXT_OVERLAP_WEIGHT
-              + drawing_inter * _DRAWING_OVERLAP_WEIGHT   # 300 — almost as heavy as text
+        score = total_inter * 500
+              + drawing_inter * 300
               + (cx-mcx)² + (cy-mcy)²
-              + 2 * v_outside²
-              + (_EDGE_ALIGN_BONUS if edge_snap else 0)    # −400 when snapped to an edge line
+              + (_EDGE_BAND_BONUS if band_snap else 0)
 
-    ``total_inter`` sums rectangle intersections between the balloon square ``cb``
-    and text spans, the item's own ``item_bbox``, and synthetic overlap when
-    another balloon is too close. ``drawing_inter`` sums intersections with
-    vector paths (still soft — never infinite — but heavily penalised).
+    ``band_snap`` is true when the balloon centre lies in the dimension's
+    vertical extent **or** horizontal extent (``y0≤cy≤y1`` or ``x0≤cx≤x1``),
+    encouraging side/top/bottom placement like manual drafting.
 
-    Edge alignment: ``edge_snap`` is true when the centre lies within
-    ``_EDGE_ALIGN_EPS`` of ``x0``, ``x1``, ``y0``, or ``y1`` (engineering
-    balloons hug left/right/top/bottom of the dimension rather than drifting
-    diagonally).
+    ``drawing_inter`` sums overlap areas with vector path bboxes — heavily
+    penalised but never treated as a hard discard so dense drawings still
+    yield a least-bad placement.
     """
     x0, y0, x1, y1 = item_bbox
     mcx = (x0 + x1) / 2
@@ -670,23 +671,23 @@ def _place_balloon_center(
     eff = CIRCLE_RADIUS + 2.0
     balloon_dist = 2 * CIRCLE_RADIUS + _BALLOON_GAP
     step = CIRCLE_RADIUS / _GRID_STEP_DIVISOR
-    max_r = CIRCLE_RADIUS * _GRID_MAX_RADIUS_FACTOR
-    leader_trig = CIRCLE_RADIUS * _LEADER_DISTANCE_FROM_DIM_MULT
+    max_dist = CIRCLE_RADIUS * _GRID_EXPAND_FACTOR
+    leader_trig = CIRCLE_RADIUS * _LEADER_DISTANCE_FROM_CENTER_MULT
 
     drawings = all_drawing_bboxes or []
+
+    gx0 = max(eff, x0 - max_dist)
+    gy0 = max(eff, y0 - max_dist)
+    gx1 = min(pw - eff, x1 + max_dist)
+    gy1 = min(ph - eff, y1 + max_dist)
 
     best: tuple[float, float] | None = None
     best_score = float("inf")
 
-    xs0 = max(eff, mcx - max_r)
-    xs1 = min(pw - eff, mcx + max_r)
-    ys0 = max(eff, mcy - max_r)
-    ys1 = min(ph - eff, mcy + max_r)
-
-    cx = xs0
-    while cx <= xs1 + 1e-9:
-        cy = ys0
-        while cy <= ys1 + 1e-9:
+    cx = gx0
+    while cx <= gx1 + 1e-9:
+        cy = gy0
+        while cy <= gy1 + 1e-9:
             cb = (cx - eff, cy - eff, cx + eff, cy + eff)
 
             total_inter = 0.0
@@ -713,21 +714,15 @@ def _place_balloon_center(
                     iy = max(0.0, min(cb[3], db[3]) - max(cb[1], db[1]))
                     drawing_inter += ix * iy
 
-            v_outside = max(0.0, max(y0 - cy, cy - y1))
             dist = (cx - mcx) ** 2 + (cy - mcy) ** 2
-            v_penalty = (v_outside * v_outside) * 2.0
 
-            edge_snap = (
-                min(abs(cx - x0), abs(cx - x1)) <= _EDGE_ALIGN_EPS
-                or min(abs(cy - y0), abs(cy - y1)) <= _EDGE_ALIGN_EPS
-            )
-            edge_bonus = _EDGE_ALIGN_BONUS if edge_snap else 0.0
+            band_snap = (y0 <= cy <= y1) or (x0 <= cx <= x1)
+            edge_bonus = _EDGE_BAND_BONUS if band_snap else 0.0
 
             score = (
                 total_inter * _TEXT_OVERLAP_WEIGHT
                 + drawing_inter * _DRAWING_OVERLAP_WEIGHT
                 + dist
-                + v_penalty
                 + edge_bonus
             )
             if score < best_score:
@@ -740,10 +735,10 @@ def _place_balloon_center(
     if best is None:
         best = (max(eff, x1 + CIRCLE_RADIUS + 6.0), max(eff, mcy))
 
-    edge_dist = _bbox_edge_distance(best[0], best[1], item_bbox)
+    center_dist = math.hypot(best[0] - mcx, best[1] - mcy)
     leader = (
         _closest_point_on_bbox(best[0], best[1], item_bbox)
-        if edge_dist > leader_trig
+        if center_dist > leader_trig
         else None
     )
     return (best[0], best[1], leader)
