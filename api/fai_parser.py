@@ -6,7 +6,7 @@ Pipeline (pure PyMuPDF + stdlib, no LLM):
 2. Filter out border grid labels and title-block text.
 3. Detect dimensions via regex (radius, diameter, angle, linear + tolerances).
 4. Detect numbered notes from the NOTES section.
-5. Classify each item and assign balloon numbers (notes first, then clockwise).
+5. Classify each item and assign balloon numbers (clustered clockwise per page).
 6. Draw semi-transparent balloons on the PDF.
 7. Export a 5-column Hebrew CSV.
 """
@@ -502,8 +502,13 @@ def _detect_dimensions(spans: list[_Span], note_bboxes: set[tuple[float, float, 
 
 
 # ---------------------------------------------------------------------------
-# Numbering: unified clockwise
+# Numbering: clustered clockwise (macro around page centre, micro per cluster)
 # ---------------------------------------------------------------------------
+
+# Max distance between item bbox centres (same page) to link into one cluster
+# (connected components). ~150–200 pt works for typical drawing clusters.
+_CLUSTER_CENTER_LINK_PT = 175.0
+
 
 def _clockwise_angle(cx: float, cy: float, x: float, y: float) -> float:
     """Angle from 12-o'clock position, increasing clockwise (0..2pi)."""
@@ -515,22 +520,121 @@ def _clockwise_angle(cx: float, cy: float, x: float, y: float) -> float:
     return angle
 
 
+def _bbox_center(it: FAIItem) -> tuple[float, float]:
+    x0, y0, x1, y1 = it.bbox
+    return ((x0 + x1) / 2, (y0 + y1) / 2)
+
+
+def _centroid_of_items(items: list[FAIItem]) -> tuple[float, float]:
+    sx = sy = 0.0
+    for it in items:
+        cx, cy = _bbox_center(it)
+        sx += cx
+        sy += cy
+    n = len(items)
+    return (sx / n, sy / n)
+
+
+def _cluster_items_by_center_distance(
+    items: list[FAIItem],
+    threshold: float,
+) -> list[list[FAIItem]]:
+    """Group items whose bbox centres lie in the same connected component when
+    edges link pairs with Euclidean distance ≤ *threshold* (single-linkage /
+    union-find, no external deps).
+    """
+    n = len(items)
+    if n == 0:
+        return []
+    if n == 1:
+        return [items.copy()]
+
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        pi, pj = find(i), find(j)
+        if pi != pj:
+            parent[pi] = pj
+
+    centers = [_bbox_center(items[i]) for i in range(n)]
+    th2 = threshold * threshold
+    for i in range(n):
+        xi, yi = centers[i]
+        for j in range(i + 1, n):
+            xj, yj = centers[j]
+            dx = xi - xj
+            dy = yi - yj
+            if dx * dx + dy * dy <= th2:
+                union(i, j)
+
+    buckets: dict[int, list[FAIItem]] = {}
+    for i in range(n):
+        r = find(i)
+        buckets.setdefault(r, []).append(items[i])
+    return list(buckets.values())
+
+
 def _assign_numbers(
     notes: list[FAIItem],
     dims: list[FAIItem],
     page_sizes: list[tuple[float, float]],
 ) -> list[FAIItem]:
-    def _sort_key(it: FAIItem) -> tuple[int, float]:
-        pw, ph = page_sizes[it.page_index] if it.page_index < len(page_sizes) else (1, 1)
-        cx_page, cy_page = pw / 2, ph / 2
-        ix = (it.bbox[0] + it.bbox[2]) / 2
-        iy = (it.bbox[1] + it.bbox[3]) / 2
-        return (it.page_index, _clockwise_angle(cx_page, cy_page, ix, iy))
+    """Assign ``balloon_number`` in document order: per page, cluster by nearby
+    bbox centres, order clusters clockwise around the page centre, then order
+    items inside each cluster clockwise around that cluster's centroid.
+    """
+    all_items = list(notes) + list(dims)
+    if not all_items:
+        return []
 
-    combined = sorted(notes + dims, key=_sort_key)
-    for i, item in enumerate(combined, start=1):
+    by_page: dict[int, list[FAIItem]] = {}
+    for it in all_items:
+        by_page.setdefault(it.page_index, []).append(it)
+
+    ordered: list[FAIItem] = []
+    for page_idx in sorted(by_page.keys()):
+        page_items = by_page[page_idx]
+        pw, ph = (
+            page_sizes[page_idx] if page_idx < len(page_sizes) else (1.0, 1.0)
+        )
+        cx_page, cy_page = pw / 2, ph / 2
+
+        clusters = _cluster_items_by_center_distance(
+            page_items, _CLUSTER_CENTER_LINK_PT
+        )
+
+        cluster_entries: list[tuple[tuple[float, float], list[FAIItem]]] = []
+        for cl in clusters:
+            cluster_entries.append((_centroid_of_items(cl), cl))
+
+        cluster_entries.sort(
+            key=lambda e: (
+                _clockwise_angle(cx_page, cy_page, e[0][0], e[0][1]),
+                math.hypot(e[0][0] - cx_page, e[0][1] - cy_page),
+            )
+        )
+
+        for (lcx, lcy), cl in cluster_entries:
+
+            def _micro_key(it: FAIItem) -> tuple[float, float]:
+                ix, iy = _bbox_center(it)
+                return (
+                    _clockwise_angle(lcx, lcy, ix, iy),
+                    math.hypot(ix - lcx, iy - lcy),
+                )
+
+            sorted_cl = sorted(cl, key=_micro_key)
+            ordered.extend(sorted_cl)
+
+    for i, item in enumerate(ordered, start=1):
         item.balloon_number = i
-    return combined
+    return ordered
 
 
 # ---------------------------------------------------------------------------
