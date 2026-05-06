@@ -4,7 +4,7 @@ FAI (First Article Inspection) auto-ballooning for vector PDF engineering drawin
 Pipeline (pure PyMuPDF + stdlib, no LLM):
 1. Extract text spans from every page.
 2. Filter out border grid labels and title-block text.
-3. Detect dimensions via regex (radius, diameter, angle, linear + tolerances).
+3. Detect dimensions via regex (radius, diameter, angle, thread, linear + tolerances).
 4. Detect numbered notes from the NOTES section.
 5. Classify each item and assign balloon numbers (clustered clockwise per page).
 6. Draw semi-transparent balloons on the PDF.
@@ -28,7 +28,15 @@ from pydantic import BaseModel, Field
 # Data models
 # ---------------------------------------------------------------------------
 
-DimensionType = Literal["Radius", "Diameter", "Angle", "Linear", "Note", "GeneralTolerance"]
+DimensionType = Literal[
+    "Radius",
+    "Diameter",
+    "Angle",
+    "Linear",
+    "Thread",
+    "Note",
+    "GeneralTolerance",
+]
 
 
 class FAIItem(BaseModel):
@@ -128,6 +136,18 @@ _RE_THREAD = re.compile(
     r"\bUN[CFJ][CF]?-?\s*\d|"
     r"\d+[/-]\d+\s*UN[A-Z]+"
     r")",
+    re.I,
+)
+
+# Smart dimension tag (V.3.6): symbol / text overrides beyond coarse gate.
+_RE_DIAMETER_CLASS = re.compile(
+    r"[⌀Øø\u2300\u2205]|(?:\bDIA\.?\b)",
+    re.I,
+)
+_RE_RADIUS_CLASS = re.compile(r"\bR\s*[\d.,]", re.I)
+_RE_ANGLE_CLASS = re.compile(r"°|\u00B0|\bDEG\b", re.I)
+_RE_THREAD_CLASS = re.compile(
+    r"(?:\bUNC\b|\bUNF\b|\bM\s*\d|#\s*\d+\s*-\s*\d+)",
     re.I,
 )
 
@@ -418,6 +438,32 @@ def _classify(text: str) -> DimensionType | None:
     return None
 
 
+def _determine_dimension_type(text: str) -> DimensionType:
+    """Refined engineering dimension tag from raw nominal text (symbol-first).
+
+    Order: Diameter → Radius → Angle → Thread → Linear. Uses PDF/extracted
+    strings only (no geometry). ``Linear`` is the fallback.
+
+    * **Diameter:** Ø / ⌀ / ø / U+2300 / U+2205 / ``DIA``.
+    * **Radius:** ``R`` word + optional space + number (``R 0.50``, ``R1.0``).
+    * **Angle:** ``°`` or ``DEG``.
+    * **Thread:** ``UNC``, ``UNF``, metric ``M`` + digit, or ``#``-dash callouts
+      (e.g. ``#6-32``).
+    """
+    s = text.strip()
+    if not s:
+        return "Linear"
+    if _RE_DIAMETER_CLASS.search(s):
+        return "Diameter"
+    if _RE_RADIUS_CLASS.search(s):
+        return "Radius"
+    if _RE_ANGLE_CLASS.search(s):
+        return "Angle"
+    if _RE_THREAD_CLASS.search(s):
+        return "Thread"
+    return "Linear"
+
+
 def _looks_like_dimension(text: str) -> bool:
     return bool(_RE_DIM_HINT.search(text))
 
@@ -488,9 +534,9 @@ def _detect_dimensions(spans: list[_Span], note_bboxes: set[tuple[float, float, 
         if not _looks_like_dimension(sp.text):
             continue
         nominal, tolerance = _extract_tolerance(sp.text)
-        dim_type = _classify(nominal)
-        if dim_type is None:
+        if _classify(nominal) is None:
             continue
+        dim_type = _determine_dimension_type(nominal)
         items.append(FAIItem(
             text=nominal,
             dimension_type=dim_type,
