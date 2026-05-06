@@ -67,13 +67,22 @@ _LEADER_DISTANCE_FACTOR = 3.0  # threshold = factor * base_offset
 _LEADER_LINE_WIDTH = 0.4
 _LEADER_LINE_COLOR = (0.45, 0.25, 0.0)
 
-# Vector-graphics avoidance.
-# Drawings whose bbox covers most of the page (frame/border, hatching plates)
-# are filtered out so they don't block every balloon candidate.
-_DRAWING_MAX_AREA_FRAC = 0.55     # reject single drawings covering > 55% of page area
-_DRAWING_MAX_DIM_FRAC = 0.90      # reject bboxes spanning > 90% of width AND > 90% of height
-_DRAWING_MIN_DIM = 0.5            # ignore degenerate / zero-size paths
-_DRAWING_PADDING = 0.5            # widen thin lines so cb (the balloon box) actually intersects them
+# Vector-graphics avoidance — balloon scoring weights (overlap areas × weight).
+_TEXT_OVERLAP_WEIGHT = 500.0      # text / own dimension / other balloons (hard)
+_DRAWING_OVERLAP_WEIGHT = 70.0    # vector strokes — softer than text
+
+# Balloon search: number of angular spokes per radius step (360° / N = step°).
+_SEARCH_DIRECTIONS = 16           # 22.5° — denser than the former 8-anchor sweep
+
+# Drawings whose bbox is essentially the page border (engineering frame).
+_PAGE_BORDER_W_FRAC = 0.90        # ≥ 90% of page width …
+_PAGE_BORDER_H_FRAC = 0.90       # …and ≥ 90% of page height → reject (single rect)
+_DRAWING_MIN_DIM = 0.5           # ignore degenerate / zero-size paths
+_DRAWING_PADDING = 0.5           # widen thin lines so ``cb`` intersects strokes
+
+# Debug overlay colours (stroke RGB 0–1 for ``shape.finish``).
+_DEBUG_TEXT_STROKE = (0.15, 0.35, 1.0)      # blue — detected text spans
+_DEBUG_DRAWING_STROKE = (1.0, 0.15, 0.05)   # red — detected drawing bboxes
 
 # Title-block exclusion zone (fraction of page dimensions)
 _TITLE_BLOCK_X_FRAC = 0.62
@@ -535,19 +544,17 @@ def _extract_drawing_bboxes(
 
     Filters
     -------
-    * **Page-frame removal:** drawings that cover ``> _DRAWING_MAX_DIM_FRAC``
-      of the page in *both* width and height (i.e. ~the page itself), or
-      whose total area exceeds ``_DRAWING_MAX_AREA_FRAC`` of the page,
-      are skipped — those would otherwise mark the entire page as occupied.
+    * **Page border:** Any drawing whose bbox has ``width ≥ _PAGE_BORDER_W_FRAC``
+      *and* ``height ≥ _PAGE_BORDER_H_FRAC`` of the page is dropped — these are
+      usually the outer drawing frame / title-block outline and would mark the
+      whole sheet as ``occupied``.
     * **Degenerate paths:** zero-size or sub-pixel paths are skipped.
-    * **Thin-line padding:** very thin paths (e.g. dimension lines) are
-      padded by ``_DRAWING_PADDING`` so the candidate balloon rectangle
-      can actually register a collision with them.
+    * **Thin-line padding:** very thin paths are padded by ``_DRAWING_PADDING``
+      so the candidate balloon rectangle intersects visible strokes.
 
     Returns the filtered, padded bounding boxes.
     """
     boxes: list[tuple[float, float, float, float]] = []
-    page_area = max(pw * ph, 1.0)
 
     try:
         drawings = page.get_drawings()
@@ -573,9 +580,7 @@ def _extract_drawing_bboxes(
         if w < _DRAWING_MIN_DIM and h < _DRAWING_MIN_DIM:
             continue
 
-        if w >= pw * _DRAWING_MAX_DIM_FRAC and h >= ph * _DRAWING_MAX_DIM_FRAC:
-            continue
-        if (w * h) >= page_area * _DRAWING_MAX_AREA_FRAC:
+        if w >= pw * _PAGE_BORDER_W_FRAC and h >= ph * _PAGE_BORDER_H_FRAC:
             continue
 
         if w < _DRAWING_PADDING:
@@ -627,6 +632,13 @@ def _place_balloon_center(
     visual link is needed, otherwise ``None``. The caller is expected to
     draw a thin leader line from the balloon's circumference to that point.
 
+    Search pattern
+    --------------
+    For each radius ``offset``, candidate centres lie on **16 spokes** from
+    ``(mcx, mcy)`` — every ``22.5°`` — covering the full circle. This is
+    denser than the former eight edge anchors and helps slip balloons into
+    narrow gaps beside crowded dimensions.
+
     Collision model
     ---------------
     * **Text** and **other balloons** are *hard* obstacles — overlapping
@@ -645,17 +657,16 @@ def _place_balloon_center(
         v_outside    = max(0, max(y0 - cy, cy - y1))
         h_aligned    = (y0 <= cy <= y1)
         dist         = (cx - mcx)^2 + (cy - mcy)^2
-        score        = total_inter   * 500       # text overlap (dominant)
-                     + drawing_inter * 50        # drawing overlap (soft)
-                     + dist                      # closeness to dimension
-                     + 2.0 * v_outside^2         # discourage above/below
-                     + (-200 if h_aligned else 0)# horizontal-alignment bonus
+        score        = total_inter   * _TEXT_OVERLAP_WEIGHT
+                     + drawing_inter * _DRAWING_OVERLAP_WEIGHT
+                     + dist
+                     + 2.0 * v_outside^2
+                     + (-200 if h_aligned else 0)
 
-    ``total_inter`` is summed text-overlap area (collision is dominant).
-    ``drawing_inter`` is summed area shared with vector graphics. Its
-    weight (``50``) is intentionally an order of magnitude below the text
-    weight so the algorithm prefers crossing a leader line over
-    overlapping a real dimension or another balloon.
+    ``total_inter`` is summed text-overlap area (hard obstacle).
+    ``drawing_inter`` is summed overlap area with vector graphics.
+    The text weight (500) ≫ drawing weight (70) so sitting on a vector stroke
+    is preferred over overlapping dimension text or another balloon.
     """
     x0, y0, x1, y1 = item_bbox
     mcx = (x0 + x1) / 2
@@ -665,29 +676,15 @@ def _place_balloon_center(
     base_offset = CIRCLE_RADIUS + 6.0
     leader_threshold = base_offset * _LEADER_DISTANCE_FACTOR
 
-    sqrt2 = math.sqrt(0.5)
-    # Each anchor: (anchor_x, anchor_y, dir_x, dir_y).
-    # Right / left mid-edges first (preferred for engineering drawings),
-    # then top / bottom mid-edges, then corners.
-    anchors: list[tuple[float, float, float, float]] = [
-        (x1, mcy,  1.0,  0.0),
-        (x0, mcy, -1.0,  0.0),
-        (mcx, y0,  0.0, -1.0),
-        (mcx, y1,  0.0,  1.0),
-        (x1, y0,   sqrt2, -sqrt2),
-        (x0, y0,  -sqrt2, -sqrt2),
-        (x1, y1,   sqrt2,  sqrt2),
-        (x0, y1,  -sqrt2,  sqrt2),
-    ]
-
     best: tuple[float, float] | None = None
     best_score = float("inf")
 
     for itry in range(1, 100):
         offset = base_offset + (itry - 1) * 1.5
-        for ax, ay, dx, dy in anchors:
-            cx = ax + dx * offset
-            cy = ay + dy * offset
+        for k in range(_SEARCH_DIRECTIONS):
+            ang = k * (2 * math.pi / _SEARCH_DIRECTIONS)
+            cx = mcx + offset * math.cos(ang)
+            cy = mcy + offset * math.sin(ang)
             cx = max(eff, min(pw - eff, cx))
             cy = max(eff, min(ph - eff, cy))
             cb = (cx - eff, cy - eff, cx + eff, cy + eff)
@@ -734,8 +731,8 @@ def _place_balloon_center(
             h_bonus = -200.0 if h_aligned else 0.0
 
             score = (
-                total_inter * 500.0
-                + drawing_inter * 50.0
+                total_inter * _TEXT_OVERLAP_WEIGHT
+                + drawing_inter * _DRAWING_OVERLAP_WEIGHT
                 + dist
                 + v_penalty
                 + h_bonus
@@ -856,6 +853,70 @@ def _annotate_pdf(
     return buf.getvalue()
 
 
+def _geometry_lists_from_pdf(
+    pdf_path: str | Path,
+) -> tuple[
+    list[list[tuple[float, float, float, float]]],
+    list[list[tuple[float, float, float, float]]],
+]:
+    """Recompute per-page text and drawing bboxes (same rules as :func:`run_fai`)."""
+    pdf_path = Path(pdf_path)
+    doc = fitz.open(str(pdf_path))
+    try:
+        page_text_bboxes: list[list[tuple[float, float, float, float]]] = []
+        page_drawing_bboxes: list[list[tuple[float, float, float, float]]] = []
+        for page_idx in range(len(doc)):
+            page = doc[page_idx]
+            pw, ph = page.rect.width, page.rect.height
+            raw_spans = _extract_spans(page, page_idx)
+            page_text_bboxes.append([sp.bbox for sp in raw_spans])
+            all_drawing_bboxes = _extract_drawing_bboxes(page, pw, ph)
+            page_drawing_bboxes.append(all_drawing_bboxes)
+        return page_text_bboxes, page_drawing_bboxes
+    finally:
+        doc.close()
+
+
+def save_debug_pdf(
+    pdf_path: str | Path,
+    out_path: str | Path,
+    page_text_bboxes: list[list[tuple[float, float, float, float]]] | None = None,
+    page_drawing_bboxes: list[list[tuple[float, float, float, float]]] | None = None,
+) -> None:
+    """Write a PDF with **blue** stroke around every text span and **red** around drawings.
+
+    If *page_text_bboxes* / *page_drawing_bboxes* are omitted, they are
+    recomputed from *pdf_path* with the same extraction as the FAI pipeline
+    (``_extract_spans`` + ``_extract_drawing_bboxes``).
+    """
+    pdf_path = Path(pdf_path)
+    out_path = Path(out_path)
+    if page_text_bboxes is None or page_drawing_bboxes is None:
+        page_text_bboxes, page_drawing_bboxes = _geometry_lists_from_pdf(pdf_path)
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        for pi in range(len(doc)):
+            page = doc[pi]
+            if pi < len(page_text_bboxes):
+                for bbox in page_text_bboxes[pi]:
+                    x0, y0, x1, y1 = bbox
+                    sh = page.new_shape()
+                    sh.draw_rect(fitz.Rect(x0, y0, x1, y1))
+                    sh.finish(color=_DEBUG_TEXT_STROKE, width=0.35)
+                    sh.commit()
+            if pi < len(page_drawing_bboxes):
+                for bbox in page_drawing_bboxes[pi]:
+                    x0, y0, x1, y1 = bbox
+                    sh = page.new_shape()
+                    sh.draw_rect(fitz.Rect(x0, y0, x1, y1))
+                    sh.finish(color=_DEBUG_DRAWING_STROKE, width=0.35)
+                    sh.commit()
+    finally:
+        doc.save(str(out_path))
+        doc.close()
+
+
 # ---------------------------------------------------------------------------
 # CSV export
 # ---------------------------------------------------------------------------
@@ -893,7 +954,8 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
 
         raw_spans = _extract_spans(page, page_idx)
         page_text_bboxes.append([sp.bbox for sp in raw_spans])
-        page_drawing_bboxes.append(_extract_drawing_bboxes(page, pw, ph))
+        all_drawing_bboxes = _extract_drawing_bboxes(page, pw, ph)
+        page_drawing_bboxes.append(all_drawing_bboxes)
         spans = _filter_spans(raw_spans, pw, ph)
 
         tol_hdr = _find_tol_header(raw_spans, page_idx, ph)
@@ -926,11 +988,14 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) < 2:
-        print("Usage: python fai_parser.py <drawing.pdf>")
+    argv = [a for a in sys.argv if a != "--debug"]
+    debug = len(argv) != len(sys.argv)
+
+    if len(argv) < 2:
+        print("Usage: python fai_parser.py <drawing.pdf> [--debug]")
         sys.exit(1)
 
-    pdf = Path(sys.argv[1])
+    pdf = Path(argv[1])
     if not pdf.exists():
         print(f"File not found: {pdf}")
         sys.exit(1)
@@ -941,3 +1006,8 @@ if __name__ == "__main__":
     out_pdf.write_bytes(annotated)
     out_csv.write_text(items_to_csv(result.items), encoding="utf-8-sig")
     print(f"Wrote {out_pdf} and {out_csv} ({len(result.items)} items)")
+
+    if debug:
+        dbg_out = pdf.with_name(pdf.stem + "_geometry_debug.pdf")
+        save_debug_pdf(pdf, dbg_out)
+        print(f"Wrote {dbg_out} (blue=text spans, red=drawings)")
