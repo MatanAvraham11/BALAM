@@ -623,11 +623,16 @@ def _assign_numbers(
         for (lcx, lcy), cl in cluster_entries:
 
             def _micro_key(it: FAIItem) -> tuple[float, float]:
+                # PDF: Y down. dx, dy_pdf = offset from cluster centroid (exact mean).
+                # Clockwise from 12 o'clock: φ = (atan2(dy_pdf, dx) + π/2) mod 2π.
+                # Same as (π/2 - atan2(dy_math, dx)) mod 2π with dy_math = -(iy - lcy).
                 ix, iy = _bbox_center(it)
-                return (
-                    _clockwise_angle(lcx, lcy, ix, iy),
-                    math.hypot(ix - lcx, iy - lcy),
+                dx = ix - lcx
+                dy_pdf = iy - lcy
+                micro_angle = (math.atan2(dy_pdf, dx) + math.pi / 2) % (
+                    2.0 * math.pi
                 )
+                return (micro_angle, math.hypot(dx, dy_pdf))
 
             sorted_cl = sorted(cl, key=_micro_key)
             ordered.extend(sorted_cl)
