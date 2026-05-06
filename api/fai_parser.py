@@ -62,17 +62,22 @@ _BALLOON_GAP = 2.0  # extra clearance between balloons (PDF pt)
 _DIM_MERGE_Y_TOL = 1.5      # max diff between vertical centers (pt)
 _DIM_MERGE_GAP_X = 6.0      # max horizontal gap between spans (pt)
 
-# Leader line drawn when balloon ends up far from the dimension.
-_LEADER_DISTANCE_FACTOR = 3.0  # threshold = factor * base_offset
+# Leader line from balloon to dimension when centre sits far from item_bbox edge.
 _LEADER_LINE_WIDTH = 0.4
 _LEADER_LINE_COLOR = (0.45, 0.25, 0.0)
+_LEADER_DISTANCE_FROM_DIM_MULT = 2.5  # draw leader if edge distance > CIRCLE_RADIUS × this
 
 # Vector-graphics avoidance — balloon scoring weights (overlap areas × weight).
-_TEXT_OVERLAP_WEIGHT = 500.0      # text / own dimension / other balloons (hard)
-_DRAWING_OVERLAP_WEIGHT = 70.0    # vector strokes — softer than text
+_TEXT_OVERLAP_WEIGHT = 500.0       # text / own dimension / other balloons (hard)
+_DRAWING_OVERLAP_WEIGHT = 300.0    # vector strokes — high penalty (was 70)
 
-# Balloon search: number of angular spokes per radius step (360° / N = step°).
-_SEARCH_DIRECTIONS = 16           # 22.5° — denser than the former 8-anchor sweep
+# Grid search around dimension centre (replace radial / directional sweep).
+_GRID_MAX_RADIUS_FACTOR = 6.0      # search radius = factor × CIRCLE_RADIUS (≈5–6× as requested)
+_GRID_STEP_DIVISOR = 2.0           # step size = CIRCLE_RADIUS / divisor (half-radius spacing)
+
+# Prefer snapping balloon centres onto horizontal/vertical lines through dimension edges.
+_EDGE_ALIGN_EPS = 2.0              # pt — within this distance of x0/x1 or y0/y1 line
+_EDGE_ALIGN_BONUS = -400.0         # negative score = bonus for edge-aligned candidates
 
 # Drawings whose bbox is essentially the page border (engineering frame).
 _PAGE_BORDER_W_FRAC = 0.90        # ≥ 90% of page width …
@@ -625,129 +630,120 @@ def _place_balloon_center(
     ph: float,
     all_drawing_bboxes: list[tuple[float, float, float, float]] | None = None,
 ) -> tuple[float, float, tuple[float, float] | None]:
-    """Find a balloon centre that avoids text, balloons, and (softly) drawings.
+    """Find a balloon centre using **dense grid search** + weighted overlap scores.
 
-    Returns ``(cx, cy, leader_anchor)``. ``leader_anchor`` is the closest
-    point on ``item_bbox`` when the balloon was forced far enough that a
-    visual link is needed, otherwise ``None``. The caller is expected to
-    draw a thin leader line from the balloon's circumference to that point.
+    Returns ``(cx, cy, leader_anchor)``. ``leader_anchor`` is the closest point
+    on ``item_bbox`` when the chosen centre is farther than
+    ``CIRCLE_RADIUS * _LEADER_DISTANCE_FROM_DIM_MULT`` from the dimension's
+    edges (thin leader line drawn by :func:`_annotate_pdf`).
 
-    Search pattern
-    --------------
-    For each radius ``offset``, candidate centres lie on **16 spokes** from
-    ``(mcx, mcy)`` — every ``22.5°`` — covering the full circle. This is
-    denser than the former eight edge anchors and helps slip balloons into
-    narrow gaps beside crowded dimensions.
+    Search
+    ------
+    Candidates fill a square centred on ``(mcx, mcy)`` with half-side
+    ``CIRCLE_RADIUS * _GRID_MAX_RADIUS_FACTOR``, clipped to the drawable page,
+    stepped by ``CIRCLE_RADIUS / _GRID_STEP_DIVISOR``. Every lattice point is
+    scored; the **global minimum** wins (no early exit).
 
-    Collision model
-    ---------------
-    * **Text** and **other balloons** are *hard* obstacles — overlapping
-      them sets ``hit = True`` and disqualifies the candidate from being
-      taken as a clean placement.
-    * **Drawing geometry** (lines, arrows, paths from
-      :func:`_extract_drawing_bboxes`) is a *soft* obstacle. Overlapping
-      it accumulates ``drawing_inter`` but does **not** disqualify the
-      candidate. In dense drawings every position crosses some line, so
-      we still want to pick the one with the least line interference.
-
-    Fallback scoring (when every candidate collides)
-    -----------------------------------------------
+    Score (lower is better)
+    -----------------------
     ::
 
-        v_outside    = max(0, max(y0 - cy, cy - y1))
-        h_aligned    = (y0 <= cy <= y1)
-        dist         = (cx - mcx)^2 + (cy - mcy)^2
-        score        = total_inter   * _TEXT_OVERLAP_WEIGHT
-                     + drawing_inter * _DRAWING_OVERLAP_WEIGHT
-                     + dist
-                     + 2.0 * v_outside^2
-                     + (-200 if h_aligned else 0)
+        score = total_inter   * _TEXT_OVERLAP_WEIGHT
+              + drawing_inter * _DRAWING_OVERLAP_WEIGHT   # 300 — almost as heavy as text
+              + (cx-mcx)² + (cy-mcy)²
+              + 2 * v_outside²
+              + (_EDGE_ALIGN_BONUS if edge_snap else 0)    # −400 when snapped to an edge line
 
-    ``total_inter`` is summed text-overlap area (hard obstacle).
-    ``drawing_inter`` is summed overlap area with vector graphics.
-    The text weight (500) ≫ drawing weight (70) so sitting on a vector stroke
-    is preferred over overlapping dimension text or another balloon.
+    ``total_inter`` sums rectangle intersections between the balloon square ``cb``
+    and text spans, the item's own ``item_bbox``, and synthetic overlap when
+    another balloon is too close. ``drawing_inter`` sums intersections with
+    vector paths (still soft — never infinite — but heavily penalised).
+
+    Edge alignment: ``edge_snap`` is true when the centre lies within
+    ``_EDGE_ALIGN_EPS`` of ``x0``, ``x1``, ``y0``, or ``y1`` (engineering
+    balloons hug left/right/top/bottom of the dimension rather than drifting
+    diagonally).
     """
     x0, y0, x1, y1 = item_bbox
     mcx = (x0 + x1) / 2
     mcy = (y0 + y1) / 2
     eff = CIRCLE_RADIUS + 2.0
     balloon_dist = 2 * CIRCLE_RADIUS + _BALLOON_GAP
-    base_offset = CIRCLE_RADIUS + 6.0
-    leader_threshold = base_offset * _LEADER_DISTANCE_FACTOR
+    step = CIRCLE_RADIUS / _GRID_STEP_DIVISOR
+    max_r = CIRCLE_RADIUS * _GRID_MAX_RADIUS_FACTOR
+    leader_trig = CIRCLE_RADIUS * _LEADER_DISTANCE_FROM_DIM_MULT
+
+    drawings = all_drawing_bboxes or []
 
     best: tuple[float, float] | None = None
     best_score = float("inf")
 
-    for itry in range(1, 100):
-        offset = base_offset + (itry - 1) * 1.5
-        for k in range(_SEARCH_DIRECTIONS):
-            ang = k * (2 * math.pi / _SEARCH_DIRECTIONS)
-            cx = mcx + offset * math.cos(ang)
-            cy = mcy + offset * math.sin(ang)
-            cx = max(eff, min(pw - eff, cx))
-            cy = max(eff, min(ph - eff, cy))
+    xs0 = max(eff, mcx - max_r)
+    xs1 = min(pw - eff, mcx + max_r)
+    ys0 = max(eff, mcy - max_r)
+    ys1 = min(ph - eff, mcy + max_r)
+
+    cx = xs0
+    while cx <= xs1 + 1e-9:
+        cy = ys0
+        while cy <= ys1 + 1e-9:
             cb = (cx - eff, cy - eff, cx + eff, cy + eff)
 
-            hit = False
             total_inter = 0.0
             drawing_inter = 0.0
 
             for tb in all_text_bboxes:
                 if _rects_overlap(cb, tb):
-                    hit = True
                     ix = max(0.0, min(cb[2], tb[2]) - max(cb[0], tb[0]))
                     iy = max(0.0, min(cb[3], tb[3]) - max(cb[1], tb[1]))
                     total_inter += ix * iy
+
             if _rects_overlap(cb, item_bbox):
-                hit = True
+                ix = max(0.0, min(cb[2], x1) - max(cb[0], x0))
+                iy = max(0.0, min(cb[3], y1) - max(cb[1], y0))
+                total_inter += ix * iy
 
             for px, py in placed_centers:
                 if math.hypot(cx - px, cy - py) < balloon_dist:
-                    hit = True
                     total_inter += balloon_dist * balloon_dist
 
-            if all_drawing_bboxes:
-                for db in all_drawing_bboxes:
-                    if _rects_overlap(cb, db):
-                        ix = max(0.0, min(cb[2], db[2]) - max(cb[0], db[0]))
-                        iy = max(0.0, min(cb[3], db[3]) - max(cb[1], db[1]))
-                        drawing_inter += ix * iy
-
-            if not hit and drawing_inter == 0.0:
-                edge_dist = _bbox_edge_distance(cx, cy, item_bbox)
-                leader = (
-                    _closest_point_on_bbox(cx, cy, item_bbox)
-                    if edge_dist > leader_threshold
-                    else None
-                )
-                return (cx, cy, leader)
+            for db in drawings:
+                if _rects_overlap(cb, db):
+                    ix = max(0.0, min(cb[2], db[2]) - max(cb[0], db[0]))
+                    iy = max(0.0, min(cb[3], db[3]) - max(cb[1], db[1]))
+                    drawing_inter += ix * iy
 
             v_outside = max(0.0, max(y0 - cy, cy - y1))
-            h_aligned = y0 <= cy <= y1
-
             dist = (cx - mcx) ** 2 + (cy - mcy) ** 2
             v_penalty = (v_outside * v_outside) * 2.0
-            h_bonus = -200.0 if h_aligned else 0.0
+
+            edge_snap = (
+                min(abs(cx - x0), abs(cx - x1)) <= _EDGE_ALIGN_EPS
+                or min(abs(cy - y0), abs(cy - y1)) <= _EDGE_ALIGN_EPS
+            )
+            edge_bonus = _EDGE_ALIGN_BONUS if edge_snap else 0.0
 
             score = (
                 total_inter * _TEXT_OVERLAP_WEIGHT
                 + drawing_inter * _DRAWING_OVERLAP_WEIGHT
                 + dist
                 + v_penalty
-                + h_bonus
+                + edge_bonus
             )
             if score < best_score:
                 best_score = score
                 best = (cx, cy)
 
+            cy += step
+        cx += step
+
     if best is None:
-        best = (max(eff, x1 + base_offset), max(eff, mcy))
+        best = (max(eff, x1 + CIRCLE_RADIUS + 6.0), max(eff, mcy))
 
     edge_dist = _bbox_edge_distance(best[0], best[1], item_bbox)
     leader = (
         _closest_point_on_bbox(best[0], best[1], item_bbox)
-        if edge_dist > leader_threshold
+        if edge_dist > leader_trig
         else None
     )
     return (best[0], best[1], leader)
@@ -817,13 +813,12 @@ def _annotate_pdf(
             if d > CIRCLE_RADIUS + 0.5:
                 sx = cx + dx / d * CIRCLE_RADIUS
                 sy = cy + dy / d * CIRCLE_RADIUS
-                leader_shape = page.new_shape()
-                leader_shape.draw_line(fitz.Point(sx, sy), fitz.Point(ax, ay))
-                leader_shape.finish(
+                page.draw_line(
+                    fitz.Point(sx, sy),
+                    fitz.Point(ax, ay),
                     color=_LEADER_LINE_COLOR,
                     width=_LEADER_LINE_WIDTH,
                 )
-                leader_shape.commit()
 
         shape = page.new_shape()
         shape.draw_circle(fitz.Point(cx, cy), CIRCLE_RADIUS)
