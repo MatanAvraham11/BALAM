@@ -505,11 +505,6 @@ def _detect_dimensions(spans: list[_Span], note_bboxes: set[tuple[float, float, 
 # Numbering: clustered clockwise (macro around page centre, micro per cluster)
 # ---------------------------------------------------------------------------
 
-# Max distance between item bbox centres (same page) to link into one cluster
-# (connected components). ~150–200 pt works for typical drawing clusters.
-_CLUSTER_CENTER_LINK_PT = 175.0
-
-
 def _clockwise_angle(cx: float, cy: float, x: float, y: float) -> float:
     """Angle from 12-o'clock position, increasing clockwise (0..2pi)."""
     dx = x - cx
@@ -589,6 +584,11 @@ def _assign_numbers(
     bbox centres, order clusters clockwise around the page centre, then order
     items inside each cluster clockwise around that cluster's centroid.
     """
+    # Wider merge distance (PDF pt): union-find links centres ≤ this apart.
+    # ~450 pt (~2.5× prior 175) keeps a localized quadrant/section in one cluster
+    # so micro-sort numbering flows before macro jumps to the next region.
+    cluster_threshold_pt = 450.0
+
     all_items = list(notes) + list(dims)
     if not all_items:
         return []
@@ -606,7 +606,7 @@ def _assign_numbers(
         cx_page, cy_page = pw / 2, ph / 2
 
         clusters = _cluster_items_by_center_distance(
-            page_items, _CLUSTER_CENTER_LINK_PT
+            page_items, cluster_threshold_pt
         )
 
         cluster_entries: list[tuple[tuple[float, float], list[FAIItem]]] = []
