@@ -67,9 +67,14 @@ _LEADER_LINE_WIDTH = 0.4
 _LEADER_LINE_COLOR = (0.0, 0.0, 0.0)
 _LEADER_DISTANCE_FROM_CENTER_MULT = 2.5  # leader if ‖(cx,cy)-(mcx,mcy)‖ > CIRCLE_RADIUS × this
 
+# Raster collision (local pixmap): penalise balloon boxes that cover dark pixels.
+_PIXEL_DARK_THRESHOLD = 220       # grayscale 0–255; below = ink / geometry
+_PIXEL_DARK_PENALTY_WEIGHT = 1000.0
+_PIXMAP_DPI = 72                  # local clip render resolution
+
 # Vector-graphics avoidance — balloon scoring weights (overlap areas × weight).
 _TEXT_OVERLAP_WEIGHT = 500.0       # text / own dimension / other balloons (hard)
-_DRAWING_OVERLAP_WEIGHT = 300.0    # vector strokes — strict penalty
+# Placement no longer uses vector drawing bboxes — geometry comes from raster sampling.
 
 # Grid search: expand item_bbox by MAX_DIST on every side (anchored to dimension, not only mcx/mcy).
 _GRID_EXPAND_FACTOR = 6.0          # MAX_DIST = factor × CIRCLE_RADIUS
@@ -621,49 +626,95 @@ def _closest_point_on_bbox(
     return (max(bx0, min(bx1, cx)), max(by0, min(by1, cy)))
 
 
+def _dark_pixel_ratio_in_clip(
+    pix: fitz.Pixmap,
+    clip_pdf: fitz.Rect,
+    cb: tuple[float, float, float, float],
+) -> float:
+    """Return fraction of pixels in ``cb ∩ clip_pdf`` whose gray value < threshold.
+
+    **Efficiency:** the pixmap is scanned row-wise with contiguous byte slices
+    ``samples[row*w + ax0 : row*w + ax1]`` so each row is one Python slice and a
+    short generator ``sum(1 for b in row if b < thr)`` — O(pixels in balloon box)
+    with minimal per-pixel overhead and no per-candidate full pixmap rescan.
+    """
+    if pix.width <= 0 or pix.height <= 0:
+        return 0.0
+    cb_rect = fitz.Rect(cb[0], cb[1], cb[2], cb[3])
+    inter = cb_rect & clip_pdf
+    if inter.is_empty:
+        return 0.0
+
+    w_px = pix.width
+    h_px = pix.height
+    cw = clip_pdf.width
+    ch = clip_pdf.height
+    if cw <= 1e-9 or ch <= 1e-9:
+        return 0.0
+
+    ax0 = int((inter.x0 - clip_pdf.x0) / cw * w_px)
+    ax1 = int(math.ceil((inter.x1 - clip_pdf.x0) / cw * w_px))
+    ay0 = int((inter.y0 - clip_pdf.y0) / ch * h_px)
+    ay1 = int(math.ceil((inter.y1 - clip_pdf.y0) / ch * h_px))
+
+    ax0 = max(0, min(w_px, ax0))
+    ax1 = max(0, min(w_px, ax1))
+    ay0 = max(0, min(h_px, ay0))
+    ay1 = max(0, min(h_px, ay1))
+
+    if ax1 <= ax0 or ay1 <= ay0:
+        return 0.0
+
+    samples = pix.samples
+    thr = _PIXEL_DARK_THRESHOLD
+    dark = 0
+    total = 0
+    for py in range(ay0, ay1):
+        row_off = py * w_px
+        row = samples[row_off + ax0 : row_off + ax1]
+        dark += sum(1 for b in row if b < thr)
+        total += len(row)
+
+    return dark / total if total else 0.0
+
+
 def _place_balloon_center(
     item_bbox: tuple[float, float, float, float],
     all_text_bboxes: list[tuple[float, float, float, float]],
     placed_centers: list[tuple[float, float]],
     pw: float,
     ph: float,
-    all_drawing_bboxes: list[tuple[float, float, float, float]] | None = None,
+    page: fitz.Page,
 ) -> tuple[float, float, tuple[float, float] | None]:
-    """Place a balloon via **grid search** over a padded ``item_bbox`` region.
+    """Place a balloon via **grid search** + **local grayscale pixmap** sampling.
 
-    Returns ``(cx, cy, leader_anchor)``. A leader anchor is returned when the
-    winning balloon centre lies farther than ``CIRCLE_RADIUS *
-    _LEADER_DISTANCE_FROM_CENTER_MULT`` from ``(mcx, mcy)`` — then
-    :func:`_annotate_pdf` draws a black leader from the balloon rim to the
-    nearest point on ``item_bbox``.
+    Before looping, the search rectangle (``item_bbox`` padded by ``MAX_DIST``)
+    is rasterised once at ``_PIXMAP_DPI``::
 
-    Search region
-    -------------
-    Grid bounds are the dimension rectangle expanded by ``MAX_DIST =
-    CIRCLE_RADIUS * _GRID_EXPAND_FACTOR`` on **each** side::
+        search_pix = page.get_pixmap(clip=search_rect, colorspace=fitz.csGRAY, dpi=72)
 
-        [x0 - MAX_DIST, y0 - MAX_DIST, x1 + MAX_DIST, y1 + MAX_DIST]
+    Each candidate balloon square ``cb`` is mapped into pixmap coordinates;
+    the **dark pixel ratio** (gray ``< _PIXEL_DARK_THRESHOLD``) is multiplied
+    by ``_PIXEL_DARK_PENALTY_WEIGHT`` so placements favour physically white
+    regions (crosshatching, raster arrows, thin leaders missed by vectors).
 
-    clipped to the drawable page. Step size is ``CIRCLE_RADIUS /
-    _GRID_STEP_DIVISOR``. Every lattice point is scored; the **global**
-    minimum wins.
+    Returns ``(cx, cy, leader_anchor)`` when the winning centre is farther than
+    ``CIRCLE_RADIUS * _LEADER_DISTANCE_FROM_CENTER_MULT`` from ``(mcx, mcy)``.
 
     Score (lower is better)
     -----------------------
     ::
 
+        pixel_penalty = dark_ratio(cb) * _PIXEL_DARK_PENALTY_WEIGHT
+
         score = total_inter * 500
-              + drawing_inter * 300
+              + pixel_penalty
               + (cx-mcx)² + (cy-mcy)²
               + (_EDGE_BAND_BONUS if band_snap else 0)
 
-    ``band_snap`` is true when the balloon centre lies in the dimension's
-    vertical extent **or** horizontal extent (``y0≤cy≤y1`` or ``x0≤cx≤x1``),
-    encouraging side/top/bottom placement like manual drafting.
-
-    ``drawing_inter`` sums overlap areas with vector path bboxes — heavily
-    penalised but never treated as a hard discard so dense drawings still
-    yield a least-bad placement.
+    Vector ``get_drawings`` boxes are **not** used here — non-text geometry is
+    inferred from pixels. ``total_inter`` still penalises overlap with text spans,
+    the item's own bbox, and nearby balloon centres.
     """
     x0, y0, x1, y1 = item_bbox
     mcx = (x0 + x1) / 2
@@ -674,12 +725,22 @@ def _place_balloon_center(
     max_dist = CIRCLE_RADIUS * _GRID_EXPAND_FACTOR
     leader_trig = CIRCLE_RADIUS * _LEADER_DISTANCE_FROM_CENTER_MULT
 
-    drawings = all_drawing_bboxes or []
-
     gx0 = max(eff, x0 - max_dist)
     gy0 = max(eff, y0 - max_dist)
     gx1 = min(pw - eff, x1 + max_dist)
     gy1 = min(ph - eff, y1 + max_dist)
+    search_rect = fitz.Rect(gx0, gy0, gx1, gy1)
+
+    search_pix: fitz.Pixmap | None = None
+    if not search_rect.is_empty and search_rect.width > 0 and search_rect.height > 0:
+        try:
+            search_pix = page.get_pixmap(
+                clip=search_rect,
+                colorspace=fitz.csGRAY,
+                dpi=_PIXMAP_DPI,
+            )
+        except Exception:
+            search_pix = None
 
     best: tuple[float, float] | None = None
     best_score = float("inf")
@@ -691,7 +752,6 @@ def _place_balloon_center(
             cb = (cx - eff, cy - eff, cx + eff, cy + eff)
 
             total_inter = 0.0
-            drawing_inter = 0.0
 
             for tb in all_text_bboxes:
                 if _rects_overlap(cb, tb):
@@ -708,11 +768,11 @@ def _place_balloon_center(
                 if math.hypot(cx - px, cy - py) < balloon_dist:
                     total_inter += balloon_dist * balloon_dist
 
-            for db in drawings:
-                if _rects_overlap(cb, db):
-                    ix = max(0.0, min(cb[2], db[2]) - max(cb[0], db[0]))
-                    iy = max(0.0, min(cb[3], db[3]) - max(cb[1], db[1]))
-                    drawing_inter += ix * iy
+            if search_pix is not None:
+                dark_ratio = _dark_pixel_ratio_in_clip(search_pix, search_rect, cb)
+                pixel_penalty = dark_ratio * _PIXEL_DARK_PENALTY_WEIGHT
+            else:
+                pixel_penalty = 0.0
 
             dist = (cx - mcx) ** 2 + (cy - mcy) ** 2
 
@@ -721,7 +781,7 @@ def _place_balloon_center(
 
             score = (
                 total_inter * _TEXT_OVERLAP_WEIGHT
-                + drawing_inter * _DRAWING_OVERLAP_WEIGHT
+                + pixel_penalty
                 + dist
                 + edge_bonus
             )
@@ -770,7 +830,6 @@ def _annotate_pdf(
     doc: fitz.Document,
     items: list[FAIItem],
     page_text_bboxes: list[list[tuple[float, float, float, float]]],
-    page_drawing_bboxes: list[list[tuple[float, float, float, float]]] | None = None,
 ) -> bytes:
     placed_by_page: dict[int, list[tuple[float, float]]] = {}
 
@@ -780,9 +839,6 @@ def _annotate_pdf(
         page = doc[item.page_index]
         pw, ph = page.rect.width, page.rect.height
         bboxes = page_text_bboxes[item.page_index] if item.page_index < len(page_text_bboxes) else []
-        drawing_bboxes: list[tuple[float, float, float, float]] = []
-        if page_drawing_bboxes is not None and item.page_index < len(page_drawing_bboxes):
-            drawing_bboxes = page_drawing_bboxes[item.page_index]
         placed = placed_by_page.setdefault(item.page_index, [])
 
         leader_anchor: tuple[float, float] | None = None
@@ -795,7 +851,7 @@ def _annotate_pdf(
             cx, cy = _nudge_note_center(cx, cy, placed, pw, ph)
         else:
             cx, cy, leader_anchor = _place_balloon_center(
-                item.bbox, bboxes, placed, pw, ph, drawing_bboxes,
+                item.bbox, bboxes, placed, pw, ph, page,
             )
 
         placed.append((cx, cy))
@@ -935,7 +991,6 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
     all_notes: list[FAIItem] = []
     all_dims: list[FAIItem] = []
     page_text_bboxes: list[list[tuple[float, float, float, float]]] = []
-    page_drawing_bboxes: list[list[tuple[float, float, float, float]]] = []
 
     for page_idx in range(len(doc)):
         page = doc[page_idx]
@@ -944,8 +999,6 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
 
         raw_spans = _extract_spans(page, page_idx)
         page_text_bboxes.append([sp.bbox for sp in raw_spans])
-        all_drawing_bboxes = _extract_drawing_bboxes(page, pw, ph)
-        page_drawing_bboxes.append(all_drawing_bboxes)
         spans = _filter_spans(raw_spans, pw, ph)
 
         tol_hdr = _find_tol_header(raw_spans, page_idx, ph)
@@ -964,9 +1017,7 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
     items = _assign_numbers(all_notes, all_dims, page_sizes)
     result = FAIResult(items=items, page_sizes=page_sizes)
 
-    annotated_bytes = _annotate_pdf(
-        doc, items, page_text_bboxes, page_drawing_bboxes,
-    )
+    annotated_bytes = _annotate_pdf(doc, items, page_text_bboxes)
     doc.close()
     return result, annotated_bytes
 
