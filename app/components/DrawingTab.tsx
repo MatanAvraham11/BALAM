@@ -50,6 +50,14 @@ export default function DrawingTab() {
     [data],
   );
 
+  /** Reset all result state and set the new file — called on every drop/select */
+  function handleFile(f: File | null) {
+    setFile(f);
+    setData(null);
+    setError(null);
+    setSuccess(null);
+  }
+
   async function handleExtract() {
     if (!file) return;
     setLoading(true);
@@ -108,7 +116,8 @@ export default function DrawingTab() {
       <FileDropzone
         label="גרור לכאן שרטוט הנדסי (PDF) או לחץ לבחירה"
         file={file}
-        onFile={setFile}
+        onFile={handleFile}
+        onError={(msg) => setError(msg)}
         disabled={loading}
         belowDropzone={
           showNewRun ? (
@@ -133,11 +142,11 @@ export default function DrawingTab() {
         </button>
       )}
 
-      {loading && <ProcessingStatus />}
+      {loading && <ProcessingStatus variant="drawing" />}
 
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
-          שגיאה בניתוח השרטוט: {error}
+          {error}
         </div>
       )}
 
@@ -149,17 +158,7 @@ export default function DrawingTab() {
 
       {data && (
         <>
-          <div className="text-base font-bold text-nativ-dark mt-2">
-            טבלת מידות
-          </div>
-          <button
-            onClick={handleDownloadCsv}
-            className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
-          >
-            הורד כ-Excel / CSV
-          </button>
-          <DataTable columns={COLUMNS} rows={rows} />
-
+          {/* PDF preview — above the data table so it's immediately visible */}
           <div className="text-base font-bold text-nativ-dark mt-2">
             שרטוט ממוספר
           </div>
@@ -170,13 +169,24 @@ export default function DrawingTab() {
               className="w-full h-[600px] rounded-xl border border-gray-200 bg-white"
             />
           )}
-
           <button
             onClick={handleDownloadPdf}
             className="w-full rounded-lg border border-nativ-gold/30 bg-white px-4 py-2.5 font-semibold text-nativ-gold shadow-sm transition-colors hover:bg-nativ-gold/5"
           >
             הורד שרטוט ממוספר (PDF)
           </button>
+
+          {/* Data table below the PDF */}
+          <div className="text-base font-bold text-nativ-dark mt-2">
+            טבלת מידות
+          </div>
+          <button
+            onClick={handleDownloadCsv}
+            className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
+          >
+            הורד כ-Excel / CSV
+          </button>
+          <DataTable columns={COLUMNS} rows={rows} />
         </>
       )}
     </div>

@@ -43,6 +43,14 @@ export default function BalamTab() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  /** Reset all result state and set the new file — called on every drop/select */
+  function handleFile(f: File | null) {
+    setFile(f);
+    setData(null);
+    setError(null);
+    setSuccess(null);
+  }
+
   async function handleExtract() {
     if (!file) return;
     setLoading(true);
@@ -98,7 +106,8 @@ export default function BalamTab() {
       <FileDropzone
         label='גרור לכאן קובץ בל"מ (PDF) או לחץ לבחירה'
         file={file}
-        onFile={setFile}
+        onFile={handleFile}
+        onError={(msg) => setError(msg)}
         disabled={loading}
         belowDropzone={
           showNewRun ? (
@@ -123,11 +132,11 @@ export default function BalamTab() {
         </button>
       )}
 
-      {loading && <ProcessingStatus />}
+      {loading && <ProcessingStatus variant="balam" />}
 
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
-          שגיאה בעיבוד הקובץ: {error}
+          {error}
         </div>
       )}
 

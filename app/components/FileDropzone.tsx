@@ -10,6 +10,8 @@ type Props = {
   disabled?: boolean;
   /** Rendered directly under the dashed drop zone, above the security notice */
   belowDropzone?: ReactNode;
+  /** Called with a human-readable message when a file is rejected */
+  onError?: (msg: string) => void;
 };
 
 export default function FileDropzone({
@@ -18,6 +20,7 @@ export default function FileDropzone({
   onFile,
   disabled,
   belowDropzone,
+  onError,
 }: Props) {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { "application/pdf": [".pdf"] },
@@ -25,6 +28,20 @@ export default function FileDropzone({
     disabled,
     onDrop: (accepted) => {
       if (accepted.length > 0) onFile(accepted[0]);
+    },
+    onDropRejected: (rejections) => {
+      if (!onError) return;
+      const first = rejections[0];
+      const code = first?.errors?.[0]?.code ?? "";
+      if (code === "file-invalid-type") {
+        onError("סוג קובץ לא תקין. יש להעלות קובץ PDF בלבד.");
+      } else if (code === "file-too-large") {
+        onError("הקובץ גדול מדי. יש להעלות קובץ עד 50MB.");
+      } else if (code === "too-many-files") {
+        onError("ניתן להעלות קובץ אחד בלבד.");
+      } else {
+        onError("הקובץ נדחה. יש להעלות קובץ PDF תקין.");
+      }
     },
   });
 
