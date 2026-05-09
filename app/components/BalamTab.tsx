@@ -6,6 +6,7 @@ import InfoCard from "./InfoCard";
 import DataTable from "./DataTable";
 import ProcessingStatus from "./ProcessingStatus";
 import { downloadBase64 } from "../lib/download";
+import { appendDataCheckHint } from "../lib/extractErrors";
 
 type BalamRow = {
   "מספר": number;
@@ -64,7 +65,13 @@ export default function BalamTab() {
       const res = await fetch("/api/balam", { method: "POST", body: fd });
       const json = await res.json();
       if (!res.ok) {
-        setError(json?.error || json?.detail || "שגיאה בעיבוד הקובץ");
+        const detail =
+          typeof json?.error === "string"
+            ? json.error
+            : typeof json?.detail === "string"
+              ? json.detail
+              : undefined;
+        setError(appendDataCheckHint(detail, "balam"));
         return;
       }
       setData(json as BalamResponse);
@@ -72,7 +79,9 @@ export default function BalamTab() {
         `הנתונים חולצו בהצלחה – נמצאו ${json.aggregated_rows.length} פריטים`,
       );
     } catch {
-      setError("שגיאה בתקשורת עם השרת");
+      setError(
+        appendDataCheckHint("שגיאה בתקשורת עם השרת", "balam"),
+      );
     } finally {
       setLoading(false);
     }

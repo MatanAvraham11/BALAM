@@ -100,7 +100,9 @@ export default function Home() {
 
   return (
     <div className="flex w-full flex-1 flex-col">
-      <SiteNav />
+      <SiteNav
+        onBrandClick={view !== "dashboard" ? goHome : undefined}
+      />
 
       <main className="mx-auto w-full max-w-7xl px-4 pb-16 pt-4 sm:px-6 lg:px-8">
         {view === "dashboard" && (

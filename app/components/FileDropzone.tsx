@@ -25,6 +25,7 @@ export default function FileDropzone({
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: { "application/pdf": [".pdf"] },
     multiple: false,
+    maxSize: 50 * 1024 * 1024,
     disabled,
     onDrop: (accepted) => {
       if (accepted.length > 0) onFile(accepted[0]);

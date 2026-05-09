@@ -5,6 +5,7 @@ import FileDropzone from "./FileDropzone";
 import DataTable from "./DataTable";
 import ProcessingStatus from "./ProcessingStatus";
 import { downloadBase64 } from "../lib/download";
+import { appendDataCheckHint } from "../lib/extractErrors";
 
 type FAIItem = {
   balloon_number: number;
@@ -71,13 +72,21 @@ export default function DrawingTab() {
       const res = await fetch("/api/drawing", { method: "POST", body: fd });
       const json = await res.json();
       if (!res.ok) {
-        setError(json?.error || json?.detail || "שגיאה בניתוח השרטוט");
+        const detail =
+          typeof json?.error === "string"
+            ? json.error
+            : typeof json?.detail === "string"
+              ? json.detail
+              : undefined;
+        setError(appendDataCheckHint(detail, "drawing"));
         return;
       }
       setData(json as DrawingResponse);
       setSuccess(`זוהו ${json.items.length} מידות/הערות בשרטוט`);
     } catch {
-      setError("שגיאה בתקשורת עם השרת");
+      setError(
+        appendDataCheckHint("שגיאה בתקשורת עם השרת", "drawing"),
+      );
     } finally {
       setLoading(false);
     }
