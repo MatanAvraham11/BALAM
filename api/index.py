@@ -264,22 +264,22 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
         aggregated_rows: list[dict[str, Any]] = df.to_dict(orient="records")
 
         original_name = file.filename or "output"
-        csv_basename = original_name.rsplit(".", 1)[0] + ".csv"
+        txt_basename = original_name.rsplit(".", 1)[0] + ".txt"
 
         buf = io.StringIO()
         # Leading tab forces Excel to treat cell as text (avoids scientific notation).
         df["מספר בלמ"] = "\t" + str(order.balam_number)
-        # CRLF line endings for Windows/Excel compatibility.
-        df.to_csv(buf, index=False, lineterminator="\r\n")
-        csv_bytes = buf.getvalue().encode("windows-1255", errors="replace")
+        # Tab-separated values + CRLF for Windows/Excel (avoids CSV delimiter issues).
+        df.to_csv(buf, index=False, lineterminator="\r\n", sep="\t")
+        txt_bytes = buf.getvalue().encode("windows-1255", errors="replace")
 
         return JSONResponse(content={
             "balam_number": order.balam_number,
             "buyer_name": order.buyer_name,
             "customer_name": order.customer_name,
             "aggregated_rows": aggregated_rows,
-            "csv_base64": base64.b64encode(csv_bytes).decode(),
-            "csv_filename": csv_basename,
+            "txt_base64": base64.b64encode(txt_bytes).decode(),
+            "txt_filename": txt_basename,
         })
     finally:
         os.unlink(tmp_path)

@@ -22,8 +22,8 @@ type BalamResponse = {
   buyer_name: string;
   customer_name: string;
   aggregated_rows: BalamRow[];
-  csv_base64: string;
-  csv_filename: string;
+  txt_base64: string;
+  txt_filename: string;
 };
 
 const COLUMNS = [
@@ -70,9 +70,13 @@ export default function BalamTab() {
     }
   }
 
-  function handleDownloadCsv() {
+  function handleDownloadTxt() {
     if (!data) return;
-    downloadBase64(data.csv_base64, data.csv_filename, "text/csv");
+    downloadBase64(
+      data.txt_base64,
+      data.txt_filename,
+      "text/plain;charset=windows-1255",
+    );
   }
 
   function handleNewRun() {
@@ -147,10 +151,10 @@ export default function BalamTab() {
             נתוני הפריטים
           </div>
           <button
-            onClick={handleDownloadCsv}
+            onClick={handleDownloadTxt}
             className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
           >
-            הורד כ-Excel / CSV
+            הורד קובץ TXT (מופרד בטאב · Excel)
           </button>
           <DataTable columns={COLUMNS} rows={data.aggregated_rows} />
         </>

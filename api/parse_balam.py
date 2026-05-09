@@ -1,5 +1,5 @@
 """
-PDF-to-CSV parser for Israeli purchasing orders (בל"מ).
+PDF-to-tab-delimited-TXT parser for Israeli purchasing orders (בל"מ).
 
 Primary: deterministic regex parser (free, instant, 100% accurate).
 Fallback: OpenAI GPT-4o with structured outputs (for unknown formats).
@@ -300,11 +300,11 @@ def parse_with_openai(text: str) -> PurchaseOrder:
 
 
 # ---------------------------------------------------------------------------
-# 4. CSV export
+# 4. Tab-delimited TXT export
 # ---------------------------------------------------------------------------
 
-def export_to_csv(order: PurchaseOrder, output_path: str | Path) -> Path:
-    """Flatten *order* into a CSV with one row per line-item."""
+def export_to_txt(order: PurchaseOrder, output_path: str | Path) -> Path:
+    """Flatten *order* into a tab-delimited ``.txt`` with one row per line-item."""
     rows = [
         {
             "מקט ספק": item.supplier_sku,
@@ -323,7 +323,7 @@ def export_to_csv(order: PurchaseOrder, output_path: str | Path) -> Path:
         f.write(f"לקוח: {order.customer_name}\n")
         f.write(f"לידי: {order.buyer_name}\n")
         f.write("\n")
-        df.to_csv(f, index=False)
+        df.to_csv(f, index=False, sep="\t")
 
     return out
 
@@ -340,7 +340,7 @@ def main() -> None:
         print(f"Error: file not found – {pdf_file}")
         sys.exit(1)
 
-    csv_path = pdf_file.with_suffix(".csv")
+    txt_path = pdf_file.with_suffix(".txt")
 
     print(f"Extracting text from {pdf_file} ...")
     text = extract_text_from_pdf(pdf_file)
@@ -354,8 +354,8 @@ def main() -> None:
         f"{len(order.line_items)} line item(s)."
     )
 
-    export_to_csv(order, csv_path)
-    print(f"CSV saved to {csv_path}")
+    export_to_txt(order, txt_path)
+    print(f"Tab-delimited TXT saved to {txt_path}")
 
 
 if __name__ == "__main__":
