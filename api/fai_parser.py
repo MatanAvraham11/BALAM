@@ -159,24 +159,26 @@ _RE_THREAD = re.compile(
 # GD&T classifier (V.3.8): ordered list of (label, pattern). First match wins —
 # more specific symbols (SphericalDiameter, Chamfer, Counterbore, etc.) must
 # come before broader ones (Diameter, Angularity) so they are not eclipsed.
+# OCR/PDF text often uses LaTeX-style escapes (``\\times``, ``\\pm``, ``\\circ``,
+# ``\\emptyset``, ``\\downarrow``); those are matched alongside Unicode drawing symbols.
 # Roughness uses case-sensitive ``Ra`` / ``RA`` to avoid swallowing tokens like
 # "race" or "RAD". Straightness intentionally does NOT match a lone ``-`` to
 # avoid colliding with asymmetric tolerances; uses ``\u23E4`` symbol or ``STR``.
 _GDT_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     ("SphericalDiameter", re.compile(
-        r"S\s*(?:[\u2300\u2205\u00D8Øø⌀]|\bDIA\.?\b)", re.I,
+        r"S\s*(?:[\u2300\u2205\u00D8Øø⌀]|\\emptyset|\\phi|\\Phi|\\varphi|(?i:\bDIA\.?\b))",
     )),
     ("Diameter", re.compile(
-        r"[\u2300\u2205\u00D8Øø⌀]|\bDIA\.?\b", re.I,
+        r"[\u2300\u2205\u00D8Øø⌀]|\\emptyset|\\phi|\\Phi|\\varphi|(?i:\bDIA\.?\b)",
     )),
     ("Radius", re.compile(
-        r"(?:^|\s)R\s*[\d.,]|\bRAD\.?\b", re.I,
+        r"(?:^|\s)R(?:\s+\d|\d|\s*[\d.,])|\bRAD\.?\b", re.I,
     )),
     ("Chamfer", re.compile(
-        r"[xX]\s*45|\bCHAM\.?\b", re.I,
+        r"(?:\\times(?:\s*45|\b)|(?i:x\s*45|x45|\bcham\.?\b))",
     )),
     ("Depth", re.compile(
-        r"[\u2193\u23B4]|\bDEPTH\b", re.I,
+        r"[\u2193\u23B4↓]|\\downarrow|\bDEPTH\b", re.I,
     )),
     ("Counterbore", re.compile(
         r"[\u2334\u2F0C]|\bC[\s.]?BORE\b|\bCB\b", re.I,
@@ -189,8 +191,9 @@ _GDT_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     )),
     ("Parallelism", re.compile(r"[\u2225]")),
     ("Perpendicularity", re.compile(r"[\u27C2\u22A5]")),
-    ("Angularity", re.compile(
-        r"[\u2220°\u00B0]|\bDEG\b", re.I,
+    ("Angularity", re.compile(r"[\u2220]")),
+    ("Angle", re.compile(
+        r"(?:\^\{\s*\\circ\s*\}|\\circ|°|\u00B0|(?i:\bDEG\b))",
     )),
     ("Position", re.compile(r"[\u2295\u2316]")),
     ("Concentricity", re.compile(r"[\u29BF\u25CE]")),
@@ -205,9 +208,9 @@ _GDT_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     ("SurfaceFinish", re.compile(r"[\u221A]")),
     ("Roughness", re.compile(r"\b(?:Ra|RA)\b")),
     ("Thread", re.compile(
-        r"\bUN(?:C|F|EF)\b|#\s*\d+\s*-\s*\d+|\bM\s*\d", re.I,
+        r"(?:\bUN(?:C|F|EF)\b|#\s*\d+\s*-\s*\d+|#\d+-\d+|\bM\s*\d+|\bM\d+)", re.I,
     )),
-    ("GeneralTolerance", re.compile(r"[\u00B1±]")),
+    ("GeneralTolerance", re.compile(r"[\u00B1±]|\\pm")),
 ]
 
 # Patterns that look like real dimension text (not just any number)
@@ -504,13 +507,16 @@ def _determine_dimension_type(text: str) -> DimensionType:
     falling back to ``"Linear"``. Specific symbols (SphericalDiameter,
     Chamfer, Counterbore/CBORE, Countersink/CSK, depth ↓, etc.) are tried
     before broader ones (Diameter, Angularity) and before the
-    ``±``-only ``GeneralTolerance`` rule.
+    ``±`` / ``\\pm`` ``GeneralTolerance`` rule.
 
     Notes
     -----
     * Roughness uses **case-sensitive** ``Ra`` / ``RA`` to avoid noise.
     * Straightness avoids the bare ``-`` to keep asymmetric tolerances
       from being mis-classified — uses the ⏤ symbol or ``STR``.
+    * **Angularity** is the GD&T ``∠`` symbol only; **Angle** covers degree
+      marks (``°``, ``DEG``, ``\\circ``, ``^{\\circ}``) so chamfer strings like
+      ``0.30\\times45^{\\circ}`` still classify as **Chamfer** (matched earlier).
     * Returns plain English labels expected by the FAI export table.
     """
     s = text.strip()
