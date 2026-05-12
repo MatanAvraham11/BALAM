@@ -22,7 +22,20 @@ export default function LoginPage() {
       if (res.ok) {
         window.location.assign("/");
       } else {
-        setError("סיסמה שגויה, נסה שנית.");
+        let msg =
+          res.status === 401
+            ? "סיסמה שגויה, נסה שנית."
+            : `שגיאת שרת (${res.status}). בדוק APP_PASSWORD ו־APP_SESSION_SECRET ב־.env.local.`;
+        try {
+          const data = (await res.json()) as { detail?: unknown };
+          const d = data.detail;
+          if (typeof d === "string" && d.trim()) msg = d;
+          else if (Array.isArray(d) && d[0] && typeof (d[0] as { msg?: string }).msg === "string")
+            msg = (d[0] as { msg: string }).msg;
+        } catch {
+          /* keep msg */
+        }
+        setError(msg);
       }
     } catch {
       setError("שגיאה בתקשורת עם השרת.");
