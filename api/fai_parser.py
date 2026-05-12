@@ -29,13 +29,30 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 DimensionType = Literal[
-    "Radius",
+    "SphericalDiameter",
     "Diameter",
+    "Radius",
+    "Chamfer",
+    "Depth",
+    "Counterbore",
+    "Countersink",
+    "Square",
+    "Parallelism",
+    "Perpendicularity",
+    "Angularity",
     "Angle",
-    "Linear",
+    "Position",
+    "Concentricity",
+    "Symmetry",
+    "Circularity",
+    "Cylindricity",
+    "Straightness",
+    "SurfaceFinish",
+    "Roughness",
     "Thread",
-    "Note",
     "GeneralTolerance",
+    "Linear",
+    "Note",
 ]
 
 
@@ -139,31 +156,38 @@ _RE_THREAD = re.compile(
     re.I,
 )
 
-# Smart dimension tag (V.3.6): symbol / text overrides beyond coarse gate.
-_RE_DIAMETER_CLASS = re.compile(
-    r"[⌀Øø\u2300\u2205]|(?:\bDIA\.?\b)",
-    re.I,
-)
-_RE_RADIUS_CLASS = re.compile(r"\bR\s*[\d.,]", re.I)
-_RE_ANGLE_CLASS = re.compile(r"°|\u00B0|\bDEG\b", re.I)
-_RE_THREAD_CLASS = re.compile(
-    r"(?:\bUNC\b|\bUNF\b|\bM\s*\d|#\s*\d+\s*-\s*\d+)",
-    re.I,
+# V.3.9: dimension *classification* lives in ``_determine_dimension_type`` (explicit
+# ``re.search`` order). LaTeX fragments are matched case-sensitively; ASCII callouts
+# use inline ``(?i)…`` only — the raw string is never passed through ``.upper()``.
+
+# Extra gate for _classify: LaTeX / GD&T hints that are not covered by coarse R/Ø/°/M rules.
+_RE_CLASSIFY_SYMBOL_OR_LATEX = re.compile(
+    r"(?:"
+    r"\\(?:times|pm|circ|emptyset|phi|Phi|varphi|downarrow)|"
+    r"\^(?:\{)?\s*\\circ|"
+    r"[\u2300\u2205\u2193\u2220\u2225\u27C2\u22A5\u2295\u2316"
+    r"\u29BF\u25CE\u2261\u25EF\u20DD\u232D\u23E4\u2334\u2335\u25A1\u20DE\u221A±°]|"
+    r"(?i)\b(?:CHAM|DEPTH|RAD|DIA|UNC|UNF|UNEF|CSK|CB|CBORE|CSINK|SQ|CYL|STR|DEG)\b"
+    r")",
 )
 
-# Patterns that look like real dimension text (not just any number)
+# Patterns that look like real dimension text (not just any number).
+# No trailing ``re.I``: LaTeX ``\phi`` / ``\Phi`` must stay case-distinct in hints.
 _RE_DIM_HINT = re.compile(
     r"("
     r"\d+[\d.,]*\s*[±+\-]|"
-    r"[⌀Øø]|\bR\s*\d|\bR\.|"
+    r"[⌀Øø]|(?i)\bR\s*\d|(?i)\bR\.|"
     r"\d+\s*°|°\s*\d+|"
-    r"#[\d\-]+|M\d|\bUN[CFJ][CF]?-?\s*\d|\bTHREAD\b|"
-    r"\bRa\b|RZ|"
-    r"TYP\.?|REF\.?|MAX\.?|MIN\.?|"
-    r"\d+[\d.,]*\s*[xX]\s*\d+|"
+    r"(?i)#[\d\-]+|(?i)M\d|(?i)\bUN[CFJ][CF]?-?\s*\d|(?i)\bTHREAD\b|"
+    r"\bRa\b|(?i)RZ|"
+    r"(?i)TYP\.?|(?i)REF\.?|(?i)MAX\.?|(?i)MIN\.?|"
+    r"\d+[\d.,]*\s*(?i:x)\s*\d+|"
+    r"\\(?:times|pm|circ|emptyset|phi|Phi|varphi|downarrow)|"
+    r"[\u2300\u2205\u2193\u2220\u2225\u27C2\u22A5\u2295\u2316"
+    r"\u29BF\u25CE\u2261\u25EF\u20DD\u232D\u23E4\u2334\u2335\u25A1\u20DE\u221A]|"
+    r"(?i)\b(?:CHAM|DEPTH|DIA|RAD|UNC|UNF|CSK|CB|CYL|STR|DEG)\b|"
     r"\d+[\d.,]{1,}\b"
     r")",
-    re.I,
 )
 
 _RE_DOC_STAMP = re.compile(
@@ -425,6 +449,8 @@ def _extract_tolerance(text: str) -> tuple[str, str]:
 
 
 def _classify(text: str) -> DimensionType | None:
+    """Coarse pass/fail gate for dimension candidates (detailed type from
+    :func:`_determine_dimension_type`)."""
     if _RE_RADIUS.search(text):
         return "Radius"
     if _RE_DIAMETER.search(text):
@@ -433,35 +459,133 @@ def _classify(text: str) -> DimensionType | None:
         return "Angle"
     if _RE_THREAD.search(text):
         return "Linear"
+    if _RE_CLASSIFY_SYMBOL_OR_LATEX.search(text):
+        return "Linear"
     if _RE_DIM_NUMBER.search(text):
         return "Linear"
     return None
 
 
 def _determine_dimension_type(text: str) -> DimensionType:
-    """Refined engineering dimension tag from raw nominal text (symbol-first).
+    """GD&T / engineering dimension label from nominal text (V.3.9).
 
-    Order: Diameter → Radius → Angle → Thread → Linear. Uses PDF/extracted
-    strings only (no geometry). ``Linear`` is the fallback.
-
-    * **Diameter:** Ø / ⌀ / ø / U+2300 / U+2205 / ``DIA``.
-    * **Radius:** ``R`` word + optional space + number (``R 0.50``, ``R1.0``).
-    * **Angle:** ``°`` or ``DEG``.
-    * **Thread:** ``UNC``, ``UNF``, metric ``M`` + digit, or ``#``-dash callouts
-      (e.g. ``#6-32``).
+    LaTeX fragments (``\\times``, ``\\emptyset``, …) are matched **case-sensitively**
+    so the input is never upper-cased wholesale. ASCII callouts use inline
+    ``(?i)…`` groups only. Order is specific-before-broad (Chamfer before Angle,
+    Thread before GeneralTolerance, etc.).
     """
     s = text.strip()
     if not s:
         return "Linear"
-    if _RE_DIAMETER_CLASS.search(s):
+
+    if (
+        re.search(
+            r"S\s*(?:[\u2300\u2205\u00D8Øø⌀]|\\emptyset|\\phi|\\Phi|\\varphi)",
+            s,
+        )
+        or re.search(r"(?i)S\s+DIA\.?", s)
+    ):
+        return "SphericalDiameter"
+
+    if (
+        re.search(r"[\u2300\u2205\u00D8Øø⌀]", s)
+        or re.search(r"\\emptyset|\\phi|\\Phi|\\varphi", s)
+        or re.search(r"(?i)\bDIA\.?\b", s)
+    ):
         return "Diameter"
-    if _RE_RADIUS_CLASS.search(s):
+
+    if re.search(r"(?i)(?:^|\s)R(?:\s+\d|\d|\s*[\d.,])", s) or re.search(
+        r"(?i)\bRAD\.?\b", s
+    ):
         return "Radius"
-    if _RE_ANGLE_CLASS.search(s):
+
+    if re.search(r"\\times", s) or re.search(
+        r"(?i)(?:x\s*45|x45|\bCHAM\.?\b)", s
+    ):
+        return "Chamfer"
+
+    if (
+        re.search(r"\\downarrow", s)
+        or re.search(r"[\u2193\u23B4↓]", s)
+        or re.search(r"(?i)\bDEPTH\b", s)
+    ):
+        return "Depth"
+
+    if re.search(r"[\u2334\u2F0C]", s) or re.search(
+        r"(?i)\bC[\s.]?BORE\b|\bCB\b", s
+    ):
+        return "Counterbore"
+
+    if re.search(r"[\u2335]", s) or re.search(r"(?i)\bCSK\b|\bC[\s.]?SINK\b", s):
+        return "Countersink"
+
+    if re.search(r"[\u25A1\u20DE]", s) or re.search(r"(?i)\bSQ\b", s):
+        return "Square"
+
+    if re.search(r"[\u2225]", s):
+        return "Parallelism"
+
+    if re.search(r"[\u27C2\u22A5]", s):
+        return "Perpendicularity"
+
+    if re.search(r"[\u2220]", s):
+        return "Angularity"
+
+    if (
+        re.search(r"\^\{\s*\\circ\s*\}", s)
+        or re.search(r"\\circ", s)
+        or re.search(r"°|\u00B0", s)
+        or re.search(r"(?i)\bDEG\b", s)
+    ):
         return "Angle"
-    if _RE_THREAD_CLASS.search(s):
+
+    if re.search(r"[\u2295\u2316]", s):
+        return "Position"
+
+    if re.search(r"[\u29BF\u25CE]", s):
+        return "Concentricity"
+
+    if re.search(r"[\u2261]", s):
+        return "Symmetry"
+
+    if re.search(r"[\u25EF\u20DD]", s):
+        return "Circularity"
+
+    if re.search(r"[\u232D]", s) or re.search(r"(?i)\bCYL\b", s):
+        return "Cylindricity"
+
+    if re.search(r"[\u23E4]", s) or re.search(r"(?i)\bSTR\b", s):
+        return "Straightness"
+
+    if re.search(r"[\u221A]", s):
+        return "SurfaceFinish"
+
+    if re.search(r"\b(?:Ra|RA)\b", s):
+        return "Roughness"
+
+    if re.search(
+        r"(?i)(?:\bUN(?:C|F|EF)\b|#\s*\d+\s*-\s*\d+|#\d+-\d+|\bM\s*\d+|\bM\d+)",
+        s,
+    ):
         return "Thread"
+
+    if re.search(r"[\u00B1±]|\\pm", s):
+        return "GeneralTolerance"
+
     return "Linear"
+
+
+def dimension_type_for_export(it: FAIItem) -> DimensionType:
+    """Type column for CSV / API: re-derive from ``it.text`` with V.3.9 rules.
+
+    Notes and title-block general-tolerance rows keep their stored kinds because
+    their ``text`` is not a full dimension string (e.g. bare ``0.1``).
+    """
+    if it.dimension_type == "Note":
+        return "Note"
+    if it.dimension_type == "GeneralTolerance":
+        return "GeneralTolerance"
+    return _determine_dimension_type(it.text)
 
 
 def _looks_like_dimension(text: str) -> bool:
@@ -1130,7 +1254,8 @@ def items_to_csv(items: list[FAIItem]) -> str:
     writer = csv.writer(buf, quoting=csv.QUOTE_ALL)
     writer.writerow(_CSV_HEADERS)
     for it in items:
-        writer.writerow([it.balloon_number, it.text, it.dimension_type, it.tolerance, ""])
+        row_type = dimension_type_for_export(it)
+        writer.writerow([it.balloon_number, it.text, row_type, it.tolerance, ""])
     return buf.getvalue()
 
 

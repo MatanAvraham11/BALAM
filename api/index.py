@@ -42,7 +42,7 @@ from parse_balam import (
     format_balam_tsv_body,
     parse_balam_text,
 )
-from fai_parser import items_to_csv, run_fai
+from fai_parser import dimension_type_for_export, items_to_csv, run_fai
 
 app = FastAPI()
 
@@ -309,7 +309,7 @@ async def drawing_endpoint(request: Request, file: UploadFile) -> JSONResponse:
             {
                 "balloon_number": it.balloon_number,
                 "text": it.text,
-                "dimension_type": it.dimension_type,
+                "dimension_type": dimension_type_for_export(it),
                 "tolerance": it.tolerance,
             }
             for it in result.items
