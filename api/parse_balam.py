@@ -7,7 +7,6 @@ Fallback: OpenAI GPT-4o with structured outputs (for unknown formats).
 
 from __future__ import annotations
 
-import csv
 import re
 import sys
 from pathlib import Path
@@ -304,6 +303,20 @@ def parse_with_openai(text: str) -> PurchaseOrder:
 # 4. Tab-delimited TXT export
 # ---------------------------------------------------------------------------
 
+def format_balam_tsv_body(df: pd.DataFrame) -> str:
+    """Build TSV: tab between fields, CRLF line endings.
+
+    No csv/pandas quoting: each cell is ``str(value)`` so embedded quotes in
+    Hebrew text stay literal. One output column per DataFrame column (no tab
+    prefix inside cells).
+    """
+    cols = list(df.columns)
+    lines = ["\t".join(cols)]
+    for _, row in df.iterrows():
+        lines.append("\t".join(str(row[c]) for c in cols))
+    return "\r\n".join(lines) + "\r\n"
+
+
 def export_to_txt(order: PurchaseOrder, output_path: str | Path) -> Path:
     """Flatten *order* into a tab-delimited ``.txt`` with one row per line-item."""
     rows = [
@@ -318,19 +331,13 @@ def export_to_txt(order: PurchaseOrder, output_path: str | Path) -> Path:
     df = pd.DataFrame(rows)
     out = Path(output_path)
 
-    # newline='\r\n' makes Python translate any '\n' written to CRLF (Windows/Excel).
-    with open(out, "w", encoding="utf-8-sig", newline="\r\n") as f:
+    # newline="" so our explicit ``\r\n`` in ``format_balam_tsv_body`` is not doubled.
+    with open(out, "w", encoding="utf-8-sig", newline="") as f:
         f.write(f'מספר בל"מ: {order.balam_number}\n')
         f.write(f"לקוח: {order.customer_name}\n")
         f.write(f"לידי: {order.buyer_name}\n")
         f.write("\n")
-        df.to_csv(
-            f,
-            index=False,
-            sep="\t",
-            quoting=csv.QUOTE_NONE,
-            escapechar="\\",
-        )
+        f.write(format_balam_tsv_body(df))
 
     return out
 

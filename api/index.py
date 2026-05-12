@@ -14,7 +14,6 @@ All routes are funnelled here via vercel.json rewrite.
 from __future__ import annotations
 
 import base64
-import csv
 import hashlib
 import hmac
 import io
@@ -37,7 +36,12 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from parse_balam import PurchaseOrder, extract_text_from_pdf, parse_balam_text
+from parse_balam import (
+    PurchaseOrder,
+    extract_text_from_pdf,
+    format_balam_tsv_body,
+    parse_balam_text,
+)
 from fai_parser import items_to_csv, run_fai
 
 app = FastAPI()
@@ -267,18 +271,10 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
         original_name = file.filename or "output"
         txt_basename = original_name.rsplit(".", 1)[0] + ".txt"
 
+        # Manual TSV: no pandas/csv quoting or escapechar; exactly 7 columns; no
+        # leading tab in "מספר בלמ" (that previously split into an extra column).
         buf = io.StringIO()
-        # Leading tab forces Excel to treat cell as text (avoids scientific notation).
-        df["מספר בלמ"] = "\t" + str(order.balam_number)
-        # Tab-separated raw text: no CSV-style quoting (avoids extra " columns and "" in בע"מ).
-        df.to_csv(
-            buf,
-            index=False,
-            lineterminator="\r\n",
-            sep="\t",
-            quoting=csv.QUOTE_NONE,
-            escapechar="\\",
-        )
+        buf.write(format_balam_tsv_body(df))
         txt_bytes = buf.getvalue().encode("windows-1255", errors="replace")
 
         return JSONResponse(content={
