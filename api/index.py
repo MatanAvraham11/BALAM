@@ -14,6 +14,7 @@ All routes are funnelled here via vercel.json rewrite.
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import hmac
 import io
@@ -269,8 +270,15 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
         buf = io.StringIO()
         # Leading tab forces Excel to treat cell as text (avoids scientific notation).
         df["מספר בלמ"] = "\t" + str(order.balam_number)
-        # Tab-separated values + CRLF for Windows/Excel (avoids CSV delimiter issues).
-        df.to_csv(buf, index=False, lineterminator="\r\n", sep="\t")
+        # Tab-separated raw text: no CSV-style quoting (avoids extra " columns and "" in בע"מ).
+        df.to_csv(
+            buf,
+            index=False,
+            lineterminator="\r\n",
+            sep="\t",
+            quoting=csv.QUOTE_NONE,
+            escapechar="\\",
+        )
         txt_bytes = buf.getvalue().encode("windows-1255", errors="replace")
 
         return JSONResponse(content={

@@ -7,6 +7,7 @@ Fallback: OpenAI GPT-4o with structured outputs (for unknown formats).
 
 from __future__ import annotations
 
+import csv
 import re
 import sys
 from pathlib import Path
@@ -323,7 +324,13 @@ def export_to_txt(order: PurchaseOrder, output_path: str | Path) -> Path:
         f.write(f"לקוח: {order.customer_name}\n")
         f.write(f"לידי: {order.buyer_name}\n")
         f.write("\n")
-        df.to_csv(f, index=False, sep="\t")
+        df.to_csv(
+            f,
+            index=False,
+            sep="\t",
+            quoting=csv.QUOTE_NONE,
+            escapechar="\\",
+        )
 
     return out
 
