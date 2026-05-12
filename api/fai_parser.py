@@ -29,13 +29,30 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 DimensionType = Literal[
-    "Radius",
+    "SphericalDiameter",
     "Diameter",
+    "Radius",
+    "Chamfer",
+    "Depth",
+    "Counterbore",
+    "Countersink",
+    "Square",
+    "Parallelism",
+    "Perpendicularity",
+    "Angularity",
     "Angle",
-    "Linear",
+    "Position",
+    "Concentricity",
+    "Symmetry",
+    "Circularity",
+    "Cylindricity",
+    "Straightness",
+    "SurfaceFinish",
+    "Roughness",
     "Thread",
-    "Note",
     "GeneralTolerance",
+    "Linear",
+    "Note",
 ]
 
 
@@ -139,17 +156,59 @@ _RE_THREAD = re.compile(
     re.I,
 )
 
-# Smart dimension tag (V.3.6): symbol / text overrides beyond coarse gate.
-_RE_DIAMETER_CLASS = re.compile(
-    r"[⌀Øø\u2300\u2205]|(?:\bDIA\.?\b)",
-    re.I,
-)
-_RE_RADIUS_CLASS = re.compile(r"\bR\s*[\d.,]", re.I)
-_RE_ANGLE_CLASS = re.compile(r"°|\u00B0|\bDEG\b", re.I)
-_RE_THREAD_CLASS = re.compile(
-    r"(?:\bUNC\b|\bUNF\b|\bM\s*\d|#\s*\d+\s*-\s*\d+)",
-    re.I,
-)
+# GD&T classifier (V.3.8): ordered list of (label, pattern). First match wins —
+# more specific symbols (SphericalDiameter, Chamfer, Counterbore, etc.) must
+# come before broader ones (Diameter, Angularity) so they are not eclipsed.
+# Roughness uses case-sensitive ``Ra`` / ``RA`` to avoid swallowing tokens like
+# "race" or "RAD". Straightness intentionally does NOT match a lone ``-`` to
+# avoid colliding with asymmetric tolerances; uses ``\u23E4`` symbol or ``STR``.
+_GDT_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
+    ("SphericalDiameter", re.compile(
+        r"S\s*(?:[\u2300\u2205\u00D8Øø⌀]|\bDIA\.?\b)", re.I,
+    )),
+    ("Diameter", re.compile(
+        r"[\u2300\u2205\u00D8Øø⌀]|\bDIA\.?\b", re.I,
+    )),
+    ("Radius", re.compile(
+        r"(?:^|\s)R\s*[\d.,]|\bRAD\.?\b", re.I,
+    )),
+    ("Chamfer", re.compile(
+        r"[xX]\s*45|\bCHAM\.?\b", re.I,
+    )),
+    ("Depth", re.compile(
+        r"[\u2193\u23B4]|\bDEPTH\b", re.I,
+    )),
+    ("Counterbore", re.compile(
+        r"[\u2334\u2F0C]|\bC[\s.]?BORE\b|\bCB\b", re.I,
+    )),
+    ("Countersink", re.compile(
+        r"[\u2335]|\bCSK\b|\bC[\s.]?SINK\b", re.I,
+    )),
+    ("Square", re.compile(
+        r"[\u25A1\u20DE]|\bSQ\b", re.I,
+    )),
+    ("Parallelism", re.compile(r"[\u2225]")),
+    ("Perpendicularity", re.compile(r"[\u27C2\u22A5]")),
+    ("Angularity", re.compile(
+        r"[\u2220°\u00B0]|\bDEG\b", re.I,
+    )),
+    ("Position", re.compile(r"[\u2295\u2316]")),
+    ("Concentricity", re.compile(r"[\u29BF\u25CE]")),
+    ("Symmetry", re.compile(r"[\u2261]")),
+    ("Circularity", re.compile(r"[\u25EF\u20DD]")),
+    ("Cylindricity", re.compile(
+        r"[\u232D]|\bCYL\b", re.I,
+    )),
+    ("Straightness", re.compile(
+        r"[\u23E4]|\bSTR\b", re.I,
+    )),
+    ("SurfaceFinish", re.compile(r"[\u221A]")),
+    ("Roughness", re.compile(r"\b(?:Ra|RA)\b")),
+    ("Thread", re.compile(
+        r"\bUN(?:C|F|EF)\b|#\s*\d+\s*-\s*\d+|\bM\s*\d", re.I,
+    )),
+    ("GeneralTolerance", re.compile(r"[\u00B1±]")),
+]
 
 # Patterns that look like real dimension text (not just any number)
 _RE_DIM_HINT = re.compile(
@@ -439,28 +498,27 @@ def _classify(text: str) -> DimensionType | None:
 
 
 def _determine_dimension_type(text: str) -> DimensionType:
-    """Refined engineering dimension tag from raw nominal text (symbol-first).
+    """Full GD&T classifier from extracted nominal text (V.3.8).
 
-    Order: Diameter → Radius → Angle → Thread → Linear. Uses PDF/extracted
-    strings only (no geometry). ``Linear`` is the fallback.
+    Evaluates :data:`_GDT_PATTERNS` in order and returns the first match —
+    falling back to ``"Linear"``. Specific symbols (SphericalDiameter,
+    Chamfer, Counterbore/CBORE, Countersink/CSK, depth ↓, etc.) are tried
+    before broader ones (Diameter, Angularity) and before the
+    ``±``-only ``GeneralTolerance`` rule.
 
-    * **Diameter:** Ø / ⌀ / ø / U+2300 / U+2205 / ``DIA``.
-    * **Radius:** ``R`` word + optional space + number (``R 0.50``, ``R1.0``).
-    * **Angle:** ``°`` or ``DEG``.
-    * **Thread:** ``UNC``, ``UNF``, metric ``M`` + digit, or ``#``-dash callouts
-      (e.g. ``#6-32``).
+    Notes
+    -----
+    * Roughness uses **case-sensitive** ``Ra`` / ``RA`` to avoid noise.
+    * Straightness avoids the bare ``-`` to keep asymmetric tolerances
+      from being mis-classified — uses the ⏤ symbol or ``STR``.
+    * Returns plain English labels expected by the FAI export table.
     """
     s = text.strip()
     if not s:
         return "Linear"
-    if _RE_DIAMETER_CLASS.search(s):
-        return "Diameter"
-    if _RE_RADIUS_CLASS.search(s):
-        return "Radius"
-    if _RE_ANGLE_CLASS.search(s):
-        return "Angle"
-    if _RE_THREAD_CLASS.search(s):
-        return "Thread"
+    for label, pattern in _GDT_PATTERNS:
+        if pattern.search(s):
+            return label  # type: ignore[return-value]
     return "Linear"
 
 
