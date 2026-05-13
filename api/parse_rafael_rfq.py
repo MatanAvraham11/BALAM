@@ -11,13 +11,14 @@ everything we need:
 Globals (page-header band, y ≲ 140 pt)
     * RFQ number      — sz=10, x≈133–163, y≈55      (also in ``FAX_INFO:…``)
     * Issue date      — sz=8,  x≈251–295, y≈85
-    * Buyer email     — sz=9,  x≈100–180, y≈100     (LDAP local-part)
+    * Buyer email     — sz=9,  x≈100–180, y≈100     (used only to map → Hebrew name)
     * Buyer phone     — sz=9,  x≈130–180, y≈88
-    * Submission date — sz=10, dd/mm/yyyy on a later page
+    * Submission date — first ``dd/mm/yyyy`` found in ``extract_text()`` in page order
+      (cover-letter paragraph; many RFQs omit it from the text layer — then issue date)
 
 Locals (per delivery row, repeating per part block)
     * Quantity         — sz=9, x≈266–290     (``\\d+\\.\\d{2}``)
-    * Day-offset (ARO) — sz=8, x≈358–372     (integer, days since ARO)
+    * Weeks ARO        — sz=8, x≈358–372     (integer, ``זמן אספקה בשבועות`` column in PDF)
     * Delivery seq #   — sz=9, x≈400–405     (1..N within part)
     * ``N`` flag       — sz=9, x≈479–486     (not exported)
     * ``Each`` unit    — sz=9, x≈503–521
@@ -26,20 +27,14 @@ Locals (per delivery row, repeating per part block)
     * Part seq index   — sz=9, x≈795–800
     * FAI marker       — sz=8, x≈30–48, ``FAI−`` then a digit just below
 
-Per the V.5.1 spec the export TXT has eight tab-separated columns
-(``\u05de\u05e1\u05e4\u05e8 \u05d1\u05dd\u05dc``, ``\u05e9\u05dd \u05e7\u05e0\u05d9\u05d9\u05df``,
-``\u05ea\u05d0\u05e8\u05d9\u05da \u05e1\u05d5\u05e4\u05d9 \u05dc\u05d4\u05d2\u05e9\u05d4``,
-``\u05de\u05e1\u05e4\u05e8 \u05e9\u05d5\u05e8\u05d4``,
-``\u05de\u05e7\u05d8 \u05e8\u05e4\u05d0\u05dc``,
-``\u05db\u05de\u05d5\u05ea \u05e0\u05d3\u05e8\u05e9\u05ea``,
-``\u05ea\u05d0\u05e8\u05d9\u05da \u05d0\u05e1\u05e4\u05e7\u05d4 \u05e0\u05d3\u05e8\u05e9``,
-``FAI``).
+Export TXT: eight tab-separated columns, ``\u05de\u05e1\u05e4\u05e8 \u05e9\u05d5\u05e8\u05d4`` first,
+then globals + locals (``\u05d6\u05de\u05df \u05d0\u05e1\u05e4\u05e7\u05d4 \u05d1\u05e9\u05d1\u05d5\u05e2\u05d5\u05ea`` = integer weeks, not a calendar date).
 """
 
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +51,9 @@ FAI_NOT_REQUIRED = "לא נדרש"
 
 class Delivery(BaseModel):
     quantity: float = Field(description="כמות נדרשת")
-    delivery_date: str = Field(description="תאריך אספקה נדרש (dd/mm/yyyy)")
+    weeks_aro: int = Field(
+        description="זמן אספקה בשבועות — מספר שלם מעמודת ARO ב-PDF",
+    )
     fai: str = Field(
         default=FAI_NOT_REQUIRED,
         description='"FAI 1" / "FAI 2" / "FAI 3" / "לא נדרש"',
@@ -183,19 +180,27 @@ def _parse_dmy(token: str) -> date | None:
         return None
 
 
-def _offset_days_to_date(reference: date | None, offset: int) -> str:
-    if reference is None:
-        return ""
-    d = reference + timedelta(days=offset)
-    return d.strftime("%d/%m/%Y")
-
-
-def _buyer_from_email(email: str) -> str:
-    """Map ``haimka@rafael.co.il`` → ``HAIMKA`` (matches Rafael LDAP)."""
+def _email_local_part(email: str) -> str:
     if "@" not in email:
         return ""
-    local = email.split("@", 1)[0].strip()
-    return local.upper()
+    return email.split("@", 1)[0].strip().lower()
+
+
+# Hebrew display names keyed by e-mail local-part. The RFQ subset fonts do not
+# expose ``קניין: <name>`` as real Unicode in the operator stream, so we map
+# from the recoverable Rafael address (same row as the buyer block).
+_BUYER_HEBREW_BY_EMAIL_LOCAL: dict[str, str] = {
+    "haimka": "חיים קאופמן",
+    "sshiran": "שרה שירן",
+    "yossish2": "יוסי שני",
+}
+
+
+def _buyer_display_name_from_email(email: str) -> str:
+    local = _email_local_part(email)
+    if not local:
+        return ""
+    return _BUYER_HEBREW_BY_EMAIL_LOCAL.get(local, "")
 
 
 # ---------------------------------------------------------------------------
@@ -235,30 +240,41 @@ def _detect_issue_date(pages: list[list[dict[str, Any]]]) -> str:
 
 
 def _detect_buyer(pages: list[list[dict[str, Any]]]) -> str:
+    """Buyer Hebrew name: map from the Rafael e-mail in the header block.
+
+    The visual ``קניין: <שם>`` text is not available as Unicode in these PDFs
+    (subset-font / CMap), so we use the stable e-mail on the same header row.
+    """
     for words in pages:
         for w in words:
             if not (_in_x(w, 0.0, _EMAIL_X_MAX)
                     and _EMAIL_Y[0] <= w["top"] <= _EMAIL_Y[1]):
                 continue
             if "@rafael.co.il" in w["text"].lower():
-                return _buyer_from_email(w["text"])
+                name = _buyer_display_name_from_email(w["text"])
+                if name:
+                    return name
+                return _email_local_part(w["text"]) or ""
     return ""
 
 
 def _detect_submission_date(
-    pages: list[list[dict[str, Any]]],
+    pdf_pages_raw: list[str],
     issue_date_str: str,
 ) -> str:
-    """First ``dd/mm/yyyy`` token anywhere outside the page header.
+    """First ``dd/mm/yyyy`` in ``extract_text()`` in ascending page order.
 
-    Falls back to the issue date if none is found.
+    This matches the cover / supplier-letter region when the date is present
+    in the text layer. If the PDF only embeds the deadline as artwork, we
+    fall back to the issue-date string (still a valid ``dd/mm/yyyy``).
     """
-    for words in pages:
-        for w in words:
-            if w["top"] <= _HEADER_Y_MAX:
-                continue
-            if _RE_SUB_DATE.match(w["text"]):
-                return w["text"]
+    date_re = re.compile(r"\b(\d{2}/\d{2}/\d{4})\b")
+    for text in pdf_pages_raw:
+        m = date_re.search(text or "")
+        if m:
+            token = m.group(1)
+            if _parse_dmy(token):
+                return token
     return issue_date_str
 
 
@@ -305,7 +321,6 @@ def _find_fai_for_row(
 
 def _detect_part_blocks(
     pages: list[list[dict[str, Any]]],
-    aro_ref: date | None,
 ) -> list[PartBlock]:
     blocks: list[PartBlock] = []
 
@@ -357,14 +372,13 @@ def _detect_part_blocks(
                     ),
                     None,
                 )
-                offset = int(offset_word["text"]) if offset_word else 0
-                delivery_date = _offset_days_to_date(aro_ref, offset)
+                weeks_aro = int(offset_word["text"]) if offset_word else 0
 
                 fai = _find_fai_for_row(words, q["top"])
                 block.deliveries.append(
                     Delivery(
                         quantity=quantity,
-                        delivery_date=delivery_date,
+                        weeks_aro=weeks_aro,
                         fai=fai,
                     )
                 )
@@ -382,14 +396,14 @@ def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
     pdf_path = Path(pdf_path)
     with pdfplumber.open(str(pdf_path)) as pdf:
         pages = [_page_clean_words(p) for p in pdf.pages]
+        extract_text_pages = [(p.extract_text() or "") for p in pdf.pages]
 
     rfq_number = _detect_rfq_number(pages)
     issue_date = _detect_issue_date(pages)
     buyer_name = _detect_buyer(pages)
-    submission_date = _detect_submission_date(pages, issue_date)
+    submission_date = _detect_submission_date(extract_text_pages, issue_date)
 
-    aro_ref = _parse_dmy(submission_date) or _parse_dmy(issue_date)
-    parts = _detect_part_blocks(pages, aro_ref)
+    parts = _detect_part_blocks(pages)
 
     return RafaelRfq(
         rfq_number=rfq_number,
@@ -404,13 +418,13 @@ def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
 # ---------------------------------------------------------------------------
 
 RAFAEL_TXT_COLUMNS: list[str] = [
+    "מספר שורה",
     "מספר בלם",
     "שם קניין",
     "תאריך סופי להגשה",
-    "מספר שורה",
     "מקט רפאל",
     "כמות נדרשת",
-    "תאריך אספקה נדרש",
+    "זמן אספקה בשבועות",
     "FAI",
 ]
 
@@ -419,7 +433,7 @@ def flatten_rafael_to_rows(rfq: RafaelRfq) -> list[dict[str, Any]]:
     """Flatten parts × deliveries into the 8-column row schema.
 
     Row numbers are globally sequential 1..N across the whole RFQ
-    (not per-part), per the V.5.1 spec.
+    (not per-part). ``מספר שורה`` is the first column (sequential index).
     """
     rows: list[dict[str, Any]] = []
     line_no = 0
@@ -427,13 +441,13 @@ def flatten_rafael_to_rows(rfq: RafaelRfq) -> list[dict[str, Any]]:
         for d in part.deliveries:
             line_no += 1
             rows.append({
+                "מספר שורה": line_no,
                 "מספר בלם": rfq.rfq_number,
                 "שם קניין": rfq.buyer_name,
                 "תאריך סופי להגשה": rfq.submission_date,
-                "מספר שורה": line_no,
                 "מקט רפאל": part.rafael_pn,
                 "כמות נדרשת": d.quantity,
-                "תאריך אספקה נדרש": d.delivery_date,
+                "זמן אספקה בשבועות": d.weeks_aro,
                 "FAI": d.fai,
             })
     return rows

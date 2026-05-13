@@ -9,13 +9,13 @@ import { downloadBase64 } from "../lib/download";
 import { appendDataCheckHint } from "../lib/extractErrors";
 
 type RafaelRow = {
+  "מספר שורה": number;
   "מספר בלם": string;
   "שם קניין": string;
   "תאריך סופי להגשה": string;
-  "מספר שורה": number;
   "מקט רפאל": string;
   "כמות נדרשת": number;
-  "תאריך אספקה נדרש": string;
+  "זמן אספקה בשבועות": number;
   FAI: string;
 };
 
@@ -29,13 +29,13 @@ type RafaelResponse = {
 };
 
 const COLUMNS = [
+  "מספר שורה",
   "מספר בלם",
   "שם קניין",
   "תאריך סופי להגשה",
-  "מספר שורה",
   "מקט רפאל",
   "כמות נדרשת",
-  "תאריך אספקה נדרש",
+  "זמן אספקה בשבועות",
   "FAI",
 ];
 
@@ -108,7 +108,7 @@ export default function RafaelTab() {
     <div className="flex flex-col gap-4">
       <p className="text-sm text-gray-700">
         העלה קובץ RFQ של רפאל וקבל בשניות את כל שורות האספקה (מק״ט, כמות,
-        תאריך, FAI) מוכנות לשימוש ב-Excel.
+        שבועות ARO, FAI) מוכנות לשימוש ב-Excel.
       </p>
 
       <FileDropzone
