@@ -15,13 +15,114 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
+import os
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Literal
 
 import fitz  # PyMuPDF
 from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# Debug instrumentation (Phase 1 of V.5.0 plan)
+# ---------------------------------------------------------------------------
+
+# Set ``FAI_DEBUG=1`` in the environment to dump per-page span info and
+# per-gate drop counts next to the input PDF. Pure observability — has no
+# effect on classification, balloons, or API responses.
+_FAI_DEBUG = os.environ.get("FAI_DEBUG", "").lower() in {"1", "true", "yes"}
+
+_DEBUG_STATE: dict[str, object] = {
+    "spans_per_page": [],
+    "drops": {},
+}
+
+
+def _debug_reset() -> None:
+    _DEBUG_STATE["spans_per_page"] = []
+    _DEBUG_STATE["drops"] = {}
+
+
+def _debug_record_span(page_index: int, text: str,
+                       bbox: tuple[float, float, float, float],
+                       size: float) -> None:
+    if not _FAI_DEBUG:
+        return
+    pages: list = _DEBUG_STATE["spans_per_page"]  # type: ignore[assignment]
+    while len(pages) <= page_index:
+        pages.append([])
+    pages[page_index].append({
+        "text": text,
+        "repr": repr(text),
+        "codepoints": [ord(c) for c in text],
+        "has_pua": any(0xE000 <= ord(c) <= 0xF8FF or ord(c) == 0xFFFD
+                       for c in text),
+        "bbox": list(bbox),
+        "size": size,
+    })
+
+
+def _debug_drop(gate: str, sp_text: str) -> None:
+    if not _FAI_DEBUG:
+        return
+    drops: dict = _DEBUG_STATE["drops"]  # type: ignore[assignment]
+    bucket = drops.setdefault(gate, {"count": 0, "examples": []})
+    bucket["count"] += 1
+    if len(bucket["examples"]) < 10:
+        bucket["examples"].append(sp_text)
+
+
+def _debug_write(pdf_path: Path, items: list["FAIItem"]) -> None:
+    if not _FAI_DEBUG:
+        return
+    try:
+        spans_path = pdf_path.with_name(pdf_path.stem + "_spans.jsonl")
+        with spans_path.open("w", encoding="utf-8") as fh:
+            for pi, spans in enumerate(_DEBUG_STATE["spans_per_page"]):  # type: ignore[arg-type]
+                for rec in spans:
+                    out = dict(rec)
+                    out["page_index"] = pi
+                    fh.write(json.dumps(out, ensure_ascii=False) + "\n")
+
+        type_counts = Counter(it.dimension_type for it in items)
+        samples: dict[str, list[str]] = {}
+        for it in items:
+            bucket = samples.setdefault(it.dimension_type, [])
+            if len(bucket) < 5:
+                bucket.append(it.text)
+
+        lines: list[str] = []
+        lines.append("# FAI debug report (FAI_DEBUG=1)")
+        lines.append("")
+        lines.append(f"PDF: `{pdf_path.name}`")
+        lines.append(f"Total items: **{len(items)}**")
+        lines.append("")
+        lines.append("## Drop counts by gate")
+        drops: dict = _DEBUG_STATE["drops"]  # type: ignore[assignment]
+        if not drops:
+            lines.append("_(no drops recorded)_")
+        for gate, info in sorted(drops.items()):
+            lines.append(f"- **{gate}**: {info['count']} drops")
+            for ex in info["examples"]:
+                lines.append(f"  - `{ex!r}`")
+        lines.append("")
+        lines.append("## Type histogram")
+        for t, c in type_counts.most_common():
+            lines.append(f"- {t}: {c}")
+        lines.append("")
+        lines.append("## First samples per type")
+        for t, vals in samples.items():
+            lines.append(f"### {t}")
+            for v in vals:
+                lines.append(f"- `{v}`")
+        md_path = pdf_path.with_name(pdf_path.stem + "_fai_debug.md")
+        md_path.write_text("\n".join(lines), encoding="utf-8")
+    except OSError:
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +265,42 @@ _RE_THREAD_CLASS = re.compile(
     re.I,
 )
 
+# V.5.0: union hint that admits pure GD&T / surface / chamfer / LaTeX spans
+# into the dimension pipeline (Gate 1 / Gate 2 in ``_detect_dimensions``).
+# Final dimension type is decided by ``_determine_dimension_type``.
+_RE_GDT_HINT = re.compile(
+    # GD&T / drafting Unicode glyphs (single character class)
+    r"[\u2205\u2300\u03A6\u03C6"            # diameter family + Φ / φ
+    r"\u2295"                                  # position
+    r"\u2225"                                  # parallelism
+    r"\u22A5\u27C2"                           # perpendicularity
+    r"\u2220"                                  # angularity glyph
+    r"\u25CE"                                  # concentricity
+    r"\u2261"                                  # symmetry
+    r"\u221A"                                  # roughness (√)
+    r"\u2193"                                  # depth (↓)
+    r"\u2334"                                  # counterbore
+    r"\u2335"                                  # countersink
+    r"\u25A1"                                  # square
+    r"\u00B1"                                  # ±
+    r"\u00B0"                                  # °
+    r"]"
+    # ASCII fallbacks for diameter / square / position glyphs the CMap may emit
+    r"|[⌀Øø⊕∥⊥∠⦿≡√↓⌵⼌□]"
+    # Drafting words (case-insensitive, word-boundary)
+    r"|(?:\b(?:CBORE|CSK|DEPTH|CHAM|SQ|RAD|DIA)\b)"
+    # Spherical diameter prefix
+    r"|S\s*[⌀Øø\u2205\u2300]"
+    r"|(?:\bS\s+DIA\b)"
+    # Surface finish Ra/RA (case-sensitive Ra OR RA + digit)
+    r"|\bRa\b|\bRA\s*\d"
+    # Chamfer N x 45 (any case)
+    r"|\d+\s*[xX×]\s*45\b"
+    # LaTeX commands (case-sensitive — backslash + name)
+    r"|\\(?:Phi|phi|emptyset|pm|circ|downarrow|oplus|times|sqrt|perp|parallel|angle)\b",
+    re.IGNORECASE,
+)
+
 # Patterns that look like real dimension text (not just any number)
 _RE_DIM_HINT = re.compile(
     r"("
@@ -228,9 +365,10 @@ def _extract_spans(page: fitz.Page, page_index: int) -> list[_Span]:
                 if not t:
                     continue
                 b = span["bbox"]
-                spans.append(
-                    _Span(t, (b[0], b[1], b[2], b[3]), span.get("size", 0), page_index)
-                )
+                bbox = (b[0], b[1], b[2], b[3])
+                size = span.get("size", 0)
+                spans.append(_Span(t, bbox, size, page_index))
+                _debug_record_span(page_index, t, bbox, size)
     return spans
 
 
@@ -294,10 +432,16 @@ def _is_in_tolerance_block(
 def _filter_spans(
     spans: list[_Span], pw: float, ph: float,
 ) -> list[_Span]:
-    return [
-        sp for sp in spans
-        if not _is_border_label(sp, pw, ph) and not _is_in_title_block(sp, pw, ph)
-    ]
+    out: list[_Span] = []
+    for sp in spans:
+        if _is_border_label(sp, pw, ph):
+            _debug_drop("border_label", sp.text)
+            continue
+        if _is_in_title_block(sp, pw, ph):
+            _debug_drop("title_block", sp.text)
+            continue
+        out.append(sp)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -448,19 +592,37 @@ def _classify(text: str) -> DimensionType | None:
         return "Linear"
     if _RE_DIM_NUMBER.search(text):
         return "Linear"
+    if _RE_GDT_HINT.search(text):
+        return "Linear"
     return None
 
 
 def _determine_dimension_type(text: str) -> DimensionType:
-    """Classify nominal dimension / GD&T text for export ``Type`` column (V.5.0).
+    """Classify a span's raw text into a ``DimensionType`` for the FAI export.
 
-    Symbol-first order: spherical diameter → GD&T → finish/chamfer/general tol
-    → depth/cbore/csink/square → diameter → radius → thread → ``DEG`` angle
-    → ``Linear``. LaTeX fragments (``\\...``) are matched case-sensitively;
-    common drafting tokens use case-insensitive word matches where noted.
+    Priority order (most specific → least specific):
 
-    On invalid *text* or any unexpected error, returns ``Linear`` so parsing
-    never aborts the PDF pipeline.
+    1.  Spherical diameter (``S∅`` / ``S DIA`` / ``S\\Phi``)
+    2.  GD&T frame glyphs (``⊕ ∥ ⊥ ∠ ⦿ ≡``)
+    3.  Surface roughness (``√``, ``Ra``, ``RA`` + digit)
+    4.  Diameter (``⌀ Ø ∅ \\u2300 \\Phi \\phi \\emptyset DIA``)
+    5.  Radius (``R<digit>``, ``RAD``)
+    6.  Depth / Counterbore / Countersink / Square
+    7.  Chamfer (``N x 45`` / ``\\times 45`` / ``CHAM``)
+    8.  Thread / Angle (``°``, ``DEG``, ``\\circ``)
+    9.  General Tolerance (``±`` / ``\\pm`` — only when no symbol above matched)
+    10. ``Linear`` fallback
+
+    LaTeX commands (``\\Phi``, ``\\pm``, …) are matched case-sensitively;
+    drafting words such as ``DIA``/``CBORE``/``DEPTH`` use case-insensitive
+    word-boundary matches.
+
+    The function must run on the **raw** span text (before tolerance is
+    stripped) so that a span like ``"Ø10 ±0.05"`` keeps its Diameter type
+    and ``"5 ±0.1"`` (no symbol) is correctly tagged ``GeneralTolerance``.
+
+    Invalid input or any unexpected error returns ``Linear`` so a classifier
+    bug never aborts the PDF pipeline (Phase 4 crash-protection).
     """
     if text is None or not isinstance(text, str):
         return "Linear"
@@ -473,67 +635,85 @@ def _determine_dimension_type(text: str) -> DimensionType:
         def hit(pat: str, flags: int = 0) -> bool:
             return re.search(pat, s, flags) is not None
 
-        # --- Spherical diameter (before plain diameter) ---
-        if hit(r"S\s*[⌀Øø∅\u2205]") or hit(r"S\s+DIA\b", re.I) or hit(
-            r"S\\Phi"
-        ) or hit(r"S\\emptyset"):
+        # 1) Spherical diameter (must precede plain diameter)
+        if (
+            hit(r"S\s*[⌀Øø\u2205\u2300]")
+            or hit(r"\bS\s+DIA\b", re.I)
+            or hit(r"S\\Phi")
+            or hit(r"S\\emptyset")
+        ):
             return "SphericalDiameter"
 
-        # --- GD&T & symbols (before generic diameter / radius) ---
+        # 2) GD&T feature-control-frame glyphs (very specific)
         if hit(r"[⊕\u2295]") or hit(r"\\oplus"):
             return "Position"
-        if hit(r"[∥\u2225]"):
+        if hit(r"[∥\u2225]") or hit(r"\\parallel"):
             return "Parallelism"
-        if hit(r"[⊥\u22A5\u27C2]"):
+        if hit(r"[⊥\u22A5\u27C2]") or hit(r"\\perp"):
             return "Perpendicularity"
-        if hit(r"[∠\u2220]") or hit(r"°|\u00B0") or hit(r"\\circ"):
+        # Angularity: glyph only. Bare ``°`` / ``DEG`` is plain Angle (see step 8).
+        if hit(r"[∠\u2220]") or hit(r"\\angle"):
             return "Angularity"
         if hit(r"[⦿\u25CE]"):
             return "Concentricity"
         if hit(r"[≡\u2261]"):
             return "Symmetry"
 
-        # --- Surface / finish / chamfer / general tolerance callouts ---
-        if hit(r"[√\u221A]") or hit(r"\bRa\b") or hit(r"\bRA\b"):
-            return "Roughness"
+        # 3) Surface roughness — Ra (case-sensitive) or RA followed by a number;
+        # bare ``√`` glyph; or LaTeX ``\sqrt``.
         if (
-            hit(r"(?i)\d+\s*x\s*45\b")
-            or hit(r"(?i)\d+x45\b")
+            hit(r"[√\u221A]")
+            or hit(r"\\sqrt\b")
+            or hit(r"\bRa\b")
+            or hit(r"\bRA\s*\d")
+        ):
+            return "Roughness"
+
+        # 4) Diameter (Unicode + LaTeX + word). Phi covers both \u03A6 / \u03C6.
+        if (
+            hit(r"[⌀Øø\u2205\u2300\u03A6\u03C6]")
+            or hit(r"\bDIA\b", re.I)
+            or hit(r"\\Phi\b")
+            or hit(r"\\phi\b")
+            or hit(r"\\emptyset\b")
+        ):
+            return "Diameter"
+
+        # 5) Radius
+        if hit(r"\bR\s*[\d.,]", re.I) or hit(r"\bRAD\b", re.I):
+            return "Radius"
+
+        # 6) Hole / feature decorations
+        if hit(r"[↓\u2193]") or hit(r"\\downarrow") or hit(r"\bDEPTH\b", re.I):
+            return "Depth"
+        if hit(r"[⼌\u2334]") or hit(r"\bCBORE\b", re.I):
+            return "Counterbore"
+        # Countersink: ``⌵`` glyph or the word ``CSK``. Bare ``V`` is too
+        # ambiguous (revision/view labels) and is intentionally not matched.
+        if hit(r"[⌵\u2335]") or hit(r"\bCSK\b", re.I):
+            return "Countersink"
+        if hit(r"[\u25A1□]") or hit(r"\bSQ\b", re.I):
+            return "Square"
+
+        # 7) Chamfer
+        if (
+            hit(r"\d+\s*[xX×]\s*45\b")
             or hit(r"\\times\s*45\b")
-            or hit(r"\\times45\b")
             or hit(r"\bCHAM\b", re.I)
         ):
             return "Chamfer"
-        if hit(r"±") or hit(r"\\pm\b"):
-            return "GeneralTolerance"
 
-        if hit(r"[↓\u2193]") or hit(r"\\downarrow") or hit(r"\bDEPTH\b", re.I):
-            return "Depth"
-        if hit(r"⼌|\u2334") or hit(r"\bCBORE\b", re.I):
-            return "Counterbore"
-        if hit(r"[⌵\u2335]") or hit(r"\bCSK\b", re.I) or hit(r"\bV\b"):
-            return "Countersink"
-        if hit(r"\u25A1") or hit(r"□") or hit(r"\bSQ\b", re.I):
-            return "Square"
-
-        # --- Diameter & radius (Unicode + LaTeX + words) ---
-        if (
-            hit(r"[⌀Øø∅\u2205\u2300\u03A6\u03C6]")
-            or hit(r"\bDIA\b", re.I)
-            or hit(r"\\Phi")
-            or hit(r"\\phi")
-            or hit(r"\\emptyset")
-        ):
-            return "Diameter"
-        if hit(r"\bR\s*[\d.,]", re.I) or hit(r"\bR\s+\d", re.I) or hit(
-            r"\bRAD\b", re.I
-        ):
-            return "Radius"
-
+        # 8) Thread / Angle (``°``, ``DEG``, LaTeX ``\circ``) — Angle takes
+        # priority over ``GeneralTolerance`` so e.g. ``45° ±0.5`` stays Angle.
         if _RE_THREAD_CLASS.search(s):
             return "Thread"
-        if hit(r"\bDEG\b", re.I):
+        if hit(r"[°\u00B0]") or hit(r"\\circ\b") or hit(r"\bDEG\b", re.I):
             return "Angle"
+
+        # 9) General Tolerance — ``±`` / ``\pm`` with no symbol above matching
+        if hit(r"[±\u00B1]") or hit(r"\\pm\b"):
+            return "GeneralTolerance"
+
         return "Linear"
     except re.error:
         return "Linear"
@@ -542,7 +722,11 @@ def _determine_dimension_type(text: str) -> DimensionType:
 
 
 def _looks_like_dimension(text: str) -> bool:
-    return bool(_RE_DIM_HINT.search(text))
+    if _RE_DIM_HINT.search(text):
+        return True
+    if _RE_GDT_HINT.search(text):
+        return True
+    return False
 
 
 def _merge_dim_spans(spans: list[_Span]) -> list[_Span]:
@@ -607,13 +791,18 @@ def _detect_dimensions(spans: list[_Span], note_bboxes: set[tuple[float, float, 
     items: list[FAIItem] = []
     for sp in candidates:
         if _RE_DOC_STAMP.search(sp.text):
+            _debug_drop("doc_stamp", sp.text)
             continue
         if not _looks_like_dimension(sp.text):
+            _debug_drop("dim_hint", sp.text)
             continue
         nominal, tolerance = _extract_tolerance(sp.text)
-        if _classify(nominal) is None:
+        if _classify(nominal) is None and not _RE_GDT_HINT.search(sp.text):
+            _debug_drop("classify", sp.text)
             continue
-        dim_type = _determine_dimension_type(nominal)
+        # V.5.0: classify on the RAW span text (pre-strip) so ``±`` and other
+        # tokens that get removed by ``_extract_tolerance`` remain visible.
+        dim_type = _determine_dimension_type(sp.text)
         items.append(FAIItem(
             text=nominal,
             dimension_type=dim_type,
@@ -1218,6 +1407,7 @@ def items_to_csv(items: list[FAIItem]) -> str:
 def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
     """Parse a vector PDF, return FAI items and annotated PDF bytes."""
     pdf_path = Path(pdf_path)
+    _debug_reset()
     doc = fitz.open(str(pdf_path))
     page_sizes: list[tuple[float, float]] = []
     all_notes: list[FAIItem] = []
@@ -1251,6 +1441,7 @@ def run_fai(pdf_path: str | Path) -> tuple[FAIResult, bytes]:
 
     annotated_bytes = _annotate_pdf(doc, items, page_text_bboxes)
     doc.close()
+    _debug_write(pdf_path, items)
     return result, annotated_bytes
 
 
