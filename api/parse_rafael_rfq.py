@@ -1,5 +1,5 @@
 """
-Rafael BOM (RFQ) parser — V.5.1.
+Rafael BOM (RFQ) parser — V.5.2.
 
 Rafael RFQ PDFs are landscape A4 with a custom subset font whose CMap is
 broken for the Hebrew labels (every Hebrew glyph extracts as a
@@ -13,8 +13,12 @@ Globals (page-header band, y ≲ 140 pt)
     * Issue date      — sz=8,  x≈251–295, y≈85
     * Buyer email     — sz=9,  x≈100–180, y≈100     (used only to map → Hebrew name)
     * Buyer phone     — sz=9,  x≈130–180, y≈88
-    * Submission date — first ``dd/mm/yyyy`` found in ``extract_text()`` in page order
-      (cover-letter paragraph; many RFQs omit it from the text layer — then issue date)
+    * Buyer name      — **V.5.2**: Tesseract OCR on a page-1 header ROI reads ``קניין: …``
+      when ``tesseract`` + ``heb`` data exist and ``RAFAEL_OCR`` is enabled; else
+      e-mail → Hebrew map (V.5.1).
+    * Submission date — **V.5.2**: OCR on the supplier-letter ROI prefers
+      ``לא יאוחר מיום dd/mm/yyyy``; else first ``dd/mm/yyyy`` in ``extract_text()``
+      (often wrong vs. the printed letter) or issue date.
 
 Locals (per delivery row, repeating per part block)
     * Quantity         — sz=9, x≈266–290     (``\\d+\\.\\d{2}``)
@@ -40,6 +44,8 @@ from typing import Any
 
 import pdfplumber
 from pydantic import BaseModel, Field
+
+from rafael_ocr import ocr_globally_enabled, try_extract_globals_via_ocr
 
 
 # ---------------------------------------------------------------------------
@@ -400,8 +406,14 @@ def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
 
     rfq_number = _detect_rfq_number(pages)
     issue_date = _detect_issue_date(pages)
-    buyer_name = _detect_buyer(pages)
-    submission_date = _detect_submission_date(extract_text_pages, issue_date)
+    ocr_buyer, ocr_submission = ("", "")
+    if ocr_globally_enabled():
+        ocr_buyer, ocr_submission = try_extract_globals_via_ocr(pdf_path)
+    buyer_name = (ocr_buyer.strip() if ocr_buyer else "") or _detect_buyer(pages)
+    submission_date = (
+        (ocr_submission.strip() if ocr_submission else "")
+        or _detect_submission_date(extract_text_pages, issue_date)
+    )
 
     parts = _detect_part_blocks(pages)
 

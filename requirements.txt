@@ -4,6 +4,7 @@ pandas
 pydantic
 pymupdf
 Pillow
+pytesseract>=0.3.10
 fastapi
 uvicorn
 python-multipart

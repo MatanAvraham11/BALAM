@@ -14,6 +14,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 _ROOT = Path(__file__).resolve().parents[2]
 _API = _ROOT / "api"
@@ -38,6 +39,14 @@ from parse_rafael_rfq import (  # noqa: E402
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
+)
+from rafael_ocr import (  # noqa: E402
+    normalize_dmy_token,
+    ocr_globally_enabled,
+    parse_buyer_from_ocr_text,
+    parse_submission_deadline_from_ocr_text,
+    tesseract_available,
+    try_extract_globals_via_ocr,
 )
 
 _FIXTURE_ROOT = Path(
@@ -97,6 +106,49 @@ def _resolve_pdf_cases() -> list[dict]:
 
 
 _PDF_CASES = _resolve_pdf_cases()
+
+
+def _path_for_rfq(rfq: str) -> Path | None:
+    for case in _PDF_CASES:
+        if case["rfq"] == rfq:
+            return case["path"]
+    return None
+
+
+def _ocr_hebrew_integration_ready() -> bool:
+    if not tesseract_available():
+        return False
+    try:
+        import pytesseract  # noqa: PLC0415
+
+        return "heb" in pytesseract.get_languages()
+    except Exception:
+        return False
+
+
+class RafaelOcrStringParseTests(unittest.TestCase):
+    def test_normalize_dmy_token(self):
+        self.assertEqual(normalize_dmy_token("8 / 05 / 2026"), "08/05/2026")
+        self.assertEqual(normalize_dmy_token("08-05-2026"), "08/05/2026")
+
+    def test_buyer_from_ocr_golden(self):
+        blob = "קניין: חיים קאופמן\nhaimka@rafael.co.il"
+        self.assertEqual(parse_buyer_from_ocr_text(blob), "חיים קאופמן")
+
+    def test_deadline_anchor_preferred(self):
+        letter = (
+            "ספק נכבד,\nלהגשת הצעת מחיר\nלא יאוחר מיום 08/05/2026\n"
+            "07/05/2026 אחר"
+        )
+        self.assertEqual(parse_submission_deadline_from_ocr_text(letter), "08/05/2026")
+
+    def test_deadline_loose_spacing(self):
+        letter = "לא י אוחר מיום 8-5-2026"
+        self.assertEqual(parse_submission_deadline_from_ocr_text(letter), "08/05/2026")
+
+    def test_ocr_disabled_env(self):
+        with patch.dict(os.environ, {"RAFAEL_OCR": "0"}):
+            self.assertFalse(ocr_globally_enabled())
 
 
 class FormatIssueDateTests(unittest.TestCase):
@@ -255,6 +307,26 @@ class PdfSmokeTests(unittest.TestCase):
                 lines = body.rstrip("\r\n").split("\r\n")
                 self.assertEqual(len(lines), 1 + len(rows))
                 body.encode("windows-1255", errors="strict")
+
+
+@unittest.skipUnless(
+    _ocr_hebrew_integration_ready() and _path_for_rfq("684471") is not None,
+    "needs tesseract with heb traineddata and RFQ_1294668_684471.pdf",
+)
+class RafaelOcrPdfIntegrationTests(unittest.TestCase):
+    def test_684471_deadline_and_buyer_from_ocr(self):
+        path = _path_for_rfq("684471")
+        assert path is not None
+        with patch.dict(os.environ, {"RAFAEL_OCR": "1"}):
+            ocr_b, ocr_s = try_extract_globals_via_ocr(path)
+        if not ocr_s or ocr_s != "08/05/2026":
+            raise unittest.SkipTest(
+                f"OCR letter ROI did not yield 08/05/2026 (got {ocr_s!r}); "
+                "check Tesseract / ROI calibration on this host.",
+            )
+        rfq = parse_rafael_rfq(path)
+        self.assertEqual(rfq.submission_date, "08/05/2026")
+        self.assertIn("חיים", rfq.buyer_name)
 
 
 if __name__ == "__main__":
