@@ -29,11 +29,26 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 DimensionType = Literal[
-    "Radius",
+    "SphericalDiameter",
     "Diameter",
-    "Angle",
+    "Radius",
+    "Chamfer",
+    "Depth",
+    "Counterbore",
+    "Countersink",
+    "Square",
+    "Parallelism",
+    "Perpendicularity",
+    "Angularity",
+    "Position",
+    "Concentricity",
+    "Symmetry",
+    "Circularity",
+    "Cylindricity",
+    "Straightness",
+    "TerrainType",
+    "Roughness",
     "Linear",
-    "Thread",
     "Note",
     "GeneralTolerance",
 ]
@@ -145,10 +160,19 @@ _RE_DIAMETER_CLASS = re.compile(
     re.I,
 )
 _RE_RADIUS_CLASS = re.compile(r"\bR\s*[\d.,]", re.I)
-_RE_ANGLE_CLASS = re.compile(r"°|\u00B0|\bDEG\b", re.I)
 _RE_THREAD_CLASS = re.compile(
     r"(?:\bUNC\b|\bUNF\b|\bM\s*\d|#\s*\d+\s*-\s*\d+)",
     re.I,
+)
+
+# Extra gate for _classify / _RE_DIM_HINT: GD&T symbols and LaTeX fragments (not PDF parsing).
+_RE_GDT_GATE = re.compile(
+    r"(?:"
+    r"\\(?:times|pm|circ|emptyset|Phi|phi|downarrow)|"
+    r"[\u2300\u2205\u2193\u2220\u2225\u27C2\u22A5\u2295\u29BF\u25CE\u2261\u25EF\u20DD"
+    r"\u232d\u2334\u2335\u25a1\u20de\u221a⌵↓∥⊥∠⊕≡√⌀]|"
+    r"(?i)\b(?:DEPTH|CBORE|CSK|SQ|STR|CYL|CHAM|RAD)\b"
+    r")",
 )
 
 # Patterns that look like real dimension text (not just any number)
@@ -161,7 +185,10 @@ _RE_DIM_HINT = re.compile(
     r"\bRa\b|RZ|"
     r"TYP\.?|REF\.?|MAX\.?|MIN\.?|"
     r"\d+[\d.,]*\s*[xX]\s*\d+|"
-    r"\d+[\d.,]{1,}\b"
+    r"\d+[\d.,]{1,}\b|"
+    r"\\(?:times|pm|circ|emptyset|Phi|phi|downarrow)|"
+    r"[\u2300\u2205\u2193\u2220\u2225\u27C2\u22A5\u2295\u29BF\u25CE\u2261\u25EF\u20DD"
+    r"\u232d\u2334\u2335\u25a1\u20de\u221a⌵↓∥⊥∠⊕≡√]"
     r")",
     re.I,
 )
@@ -430,38 +457,165 @@ def _classify(text: str) -> DimensionType | None:
     if _RE_DIAMETER.search(text):
         return "Diameter"
     if _RE_ANGLE.search(text):
-        return "Angle"
+        return "Linear"
     if _RE_THREAD.search(text):
         return "Linear"
     if _RE_DIM_NUMBER.search(text):
+        return "Linear"
+    if _RE_GDT_GATE.search(text):
         return "Linear"
     return None
 
 
 def _determine_dimension_type(text: str) -> DimensionType:
-    """Refined engineering dimension tag from raw nominal text (symbol-first).
+    """Engineering / GD&T dimension label from nominal text (V.4.1).
 
-    Order: Diameter → Radius → Angle → Thread → Linear. Uses PDF/extracted
-    strings only (no geometry). ``Linear`` is the fallback.
-
-    * **Diameter:** Ø / ⌀ / ø / U+2300 / U+2205 / ``DIA``.
-    * **Radius:** ``R`` word + optional space + number (``R 0.50``, ``R1.0``).
-    * **Angle:** ``°`` or ``DEG``.
-    * **Thread:** ``UNC``, ``UNF``, metric ``M`` + digit, or ``#``-dash callouts
-      (e.g. ``#6-32``).
+    Priority-ordered ``re.search``. ASCII keywords use ``re.IGNORECASE``; LaTeX
+    commands starting with ``\\`` are matched case-sensitively.
     """
     s = text.strip()
     if not s:
         return "Linear"
+
+    # Spherical diameter
+    if (
+        re.search(r"S\s*[\u2205\u2300\u00D8Øø⌀∅]", s)
+        or re.search(r"S\s*DIA", s, re.IGNORECASE)
+        or re.search(r"S\s*\\Phi", s)
+        or re.search(r"S\s*\\emptyset", s)
+    ):
+        return "SphericalDiameter"
+
+    # Diameter
+    if (
+        re.search(r"[\u2205\u2300\u00D8Øø⌀∅]", s)
+        or re.search(r"\\emptyset|\\Phi|\\phi", s)
+        or re.search(r"(?i)\bDIA\.?(?:\s|$|\d)", s)
+    ):
+        return "Diameter"
+
+    # Radius (after Diameter so ``RAD`` / ``R`` are not swallowed by DIA paths)
+    if re.search(r"(?<![A-Za-z0-9])R\s*[.,]?\d", s, re.IGNORECASE) or re.search(
+        r"\bRAD\b", s, re.IGNORECASE
+    ):
+        return "Radius"
+
+    # Depth
+    if (
+        re.search(r"↓", s)
+        or re.search(r"\u2193", s)
+        or re.search(r"\\downarrow", s)
+        or re.search(r"\bDEPTH\b", s, re.IGNORECASE)
+    ):
+        return "Depth"
+
+    # Counterbore (⼌ = U+2F0C)
+    if (
+        re.search(r"\u2334", s)
+        or re.search(r"\u2f0c", s)
+        or re.search(r"\bCBORE\b", s, re.IGNORECASE)
+    ):
+        return "Counterbore"
+
+    # Countersink
+    if (
+        re.search(r"⌵", s)
+        or re.search(r"\u2335", s)
+        or re.search(r"\bV\b", s, re.IGNORECASE)
+        or re.search(r"\bCSK\b", s, re.IGNORECASE)
+    ):
+        return "Countersink"
+
+    # Square
+    if (
+        re.search(r"\u25a1", s)
+        or re.search(r"\u20de", s)
+        or re.search(r"\bSQ\b", s, re.IGNORECASE)
+    ):
+        return "Square"
+
+    # Parallelism
+    if re.search(r"∥", s) or re.search(r"\u2225", s):
+        return "Parallelism"
+
+    # Perpendicularity
+    if re.search(r"⊥", s) or re.search(r"\u27c2", s):
+        return "Perpendicularity"
+
+    # Angularity (includes degree / LaTeX ``\\circ`` per V.4.1 spec)
+    if (
+        re.search(r"∠", s)
+        or re.search(r"\u2220", s)
+        or re.search(r"°|\u00b0", s)
+        or re.search(r"\\circ", s)
+    ):
+        return "Angularity"
+
+    # Position
+    if re.search(r"⊕", s) or re.search(r"\u2295", s):
+        return "Position"
+
+    # Concentricity
+    if re.search(r"[\u29BF\u25CE]", s):
+        return "Concentricity"
+
+    # Symmetry
+    if re.search(r"≡", s) or re.search(r"\u2261", s):
+        return "Symmetry"
+
+    # Straightness
+    if (
+        re.search(r"\bSTR\b", s, re.IGNORECASE)
+        or re.search(r"^\s*-\s*$", s)
+    ):
+        return "Straightness"
+
+    # Circularity
+    if re.search(r"\u25ef", s) or re.search(r"\u20dd", s):
+        return "Circularity"
+
+    # Cylindricity
+    if re.search(r"\u232d", s) or re.search(r"\bCYL\b", s, re.IGNORECASE):
+        return "Cylindricity"
+
+    # Terrain type
+    if re.search(r"√", s) or re.search(r"\u221a", s):
+        return "TerrainType"
+
+    # Roughness
+    if re.search(r"\bRa\b", s, re.IGNORECASE):
+        return "Roughness"
+
+    # Chamfer
+    if (
+        re.search(r"\\times\s*45|\\times45", s)
+        or re.search(r"x\s*45|x45", s, re.IGNORECASE)
+        or re.search(r"\bCHAM\b", s, re.IGNORECASE)
+    ):
+        return "Chamfer"
+
+    # General tolerance
+    if re.search(r"±", s) or re.search(r"\\pm", s):
+        return "GeneralTolerance"
+
+    # Legacy coarse tags (same strings as pre-V.4.1 heuristics)
     if _RE_DIAMETER_CLASS.search(s):
         return "Diameter"
     if _RE_RADIUS_CLASS.search(s):
         return "Radius"
-    if _RE_ANGLE_CLASS.search(s):
-        return "Angle"
     if _RE_THREAD_CLASS.search(s):
-        return "Thread"
+        return "Linear"
+
     return "Linear"
+
+
+def dimension_type_for_export(it: FAIItem) -> DimensionType:
+    """CSV / API ``סוג מידה``: re-derive from ``it.text`` except stored notes/tol rows."""
+    if it.dimension_type == "Note":
+        return "Note"
+    if it.dimension_type == "GeneralTolerance":
+        return "GeneralTolerance"
+    return _determine_dimension_type(it.text)
 
 
 def _looks_like_dimension(text: str) -> bool:
@@ -1130,7 +1284,8 @@ def items_to_csv(items: list[FAIItem]) -> str:
     writer = csv.writer(buf, quoting=csv.QUOTE_ALL)
     writer.writerow(_CSV_HEADERS)
     for it in items:
-        writer.writerow([it.balloon_number, it.text, it.dimension_type, it.tolerance, ""])
+        row_type = dimension_type_for_export(it)
+        writer.writerow([it.balloon_number, it.text, row_type, it.tolerance, ""])
     return buf.getvalue()
 
 
