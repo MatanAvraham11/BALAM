@@ -16,12 +16,25 @@ const BALAM_STATUSES = [
   "מפיק טבלת הזמנה...",
 ];
 
+const RAFAEL_STATUSES = [
+  "מעלה קובץ RFQ של רפאל...",
+  "מזהה גלובלים (מספר בלם, קניין, תאריך הגשה)...",
+  "מאתר מק״טים וכמויות לפי עמודות...",
+  "מפצל לוחות אספקה לשורות נפרדות...",
+  "מפיק קובץ TXT מופרד טאבים...",
+];
+
 type Props = {
-  variant?: "drawing" | "balam";
+  variant?: "drawing" | "balam" | "rafael";
 };
 
 export default function ProcessingStatus({ variant = "drawing" }: Props) {
-  const statuses = variant === "balam" ? BALAM_STATUSES : DRAWING_STATUSES;
+  const statuses =
+    variant === "balam"
+      ? BALAM_STATUSES
+      : variant === "rafael"
+        ? RAFAEL_STATUSES
+        : DRAWING_STATUSES;
   const [index, setIndex] = useState(0);
 
   useEffect(() => {

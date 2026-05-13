@@ -7,6 +7,7 @@ Single FastAPI app exposing:
   GET  /api/auth
   POST /api/balam
   POST /api/drawing
+  POST /api/rafael-bom
 
 All routes are funnelled here via vercel.json rewrite.
 """
@@ -43,6 +44,12 @@ from parse_balam import (
     parse_balam_text,
 )
 from fai_parser import items_to_csv, run_fai
+from parse_rafael_rfq import (
+    RafaelRfq,
+    flatten_rafael_to_rows,
+    format_rafael_tsv_body,
+    parse_rafael_rfq,
+)
 
 app = FastAPI()
 
@@ -327,6 +334,41 @@ async def drawing_endpoint(request: Request, file: UploadFile) -> JSONResponse:
             "csv_filename": f"{base}_fai.csv",
             "annotated_pdf_base64": base64.b64encode(annotated_pdf_bytes).decode(),
             "annotated_pdf_filename": f"{base}_annotated.pdf",
+        })
+    finally:
+        os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/rafael-bom
+# ---------------------------------------------------------------------------
+
+@app.post("/api/rafael-bom")
+async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONResponse:
+    _require_auth(request)
+
+    contents = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(contents)
+        tmp_path = tmp.name
+
+    try:
+        rfq: RafaelRfq = parse_rafael_rfq(tmp_path)
+        rows: list[dict[str, Any]] = flatten_rafael_to_rows(rfq)
+
+        original_name = file.filename or "rafael_rfq"
+        txt_basename = original_name.rsplit(".", 1)[0] + ".txt"
+
+        tsv_body = format_rafael_tsv_body(rows)
+        txt_bytes = tsv_body.encode("windows-1255", errors="replace")
+
+        return JSONResponse(content={
+            "rfq_number": rfq.rfq_number,
+            "buyer_name": rfq.buyer_name,
+            "submission_date": rfq.submission_date,
+            "rows": rows,
+            "txt_base64": base64.b64encode(txt_bytes).decode(),
+            "txt_filename": txt_basename,
         })
     finally:
         os.unlink(tmp_path)

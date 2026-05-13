@@ -6,8 +6,9 @@ import LogoMarquee from "./components/LogoMarquee";
 import ProductCard from "./components/ProductCard";
 import BalamTab from "./components/BalamTab";
 import DrawingTab from "./components/DrawingTab";
+import RafaelTab from "./components/RafaelTab";
 
-type ActiveView = "dashboard" | "balam" | "drawing";
+type ActiveView = "dashboard" | "balam" | "drawing" | "rafael";
 
 const PRODUCTS = [
   {
@@ -21,6 +22,12 @@ const PRODUCTS = [
     title: "מיפוי שרטוטים מלא",
     description:
       "חילוץ, המרה וסימון של מידות מתוך שרטוטים כולל יצירת בלונים וטבלאות במטרה לאפשר חיבור בין שרטוט לנתונים, הזנה ישירה ל-ERP, והפעלת ייצור ללא עיבוד ידני.",
+  },
+  {
+    id: "rafael" as const,
+    title: "קליטת בלמים מרפאל",
+    description:
+      "חילוץ, חלוקה וסידור של שורות אספקה מתוך RFQ של רפאל לקובץ TXT במטרה לאפשר עבודה על נתונים מסודרים, הזנה מהירה למערכות, וצמצום טעויות ופספוסים בלוחות אספקה.",
   },
 ];
 
@@ -145,6 +152,7 @@ export default function Home() {
 
             {view === "balam" && <BalamTab />}
             {view === "drawing" && <DrawingTab />}
+            {view === "rafael" && <RafaelTab />}
           </div>
         )}
       </main>
