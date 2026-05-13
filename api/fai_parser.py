@@ -47,7 +47,7 @@ DimensionType = Literal[
     "Circularity",
     "Cylindricity",
     "Straightness",
-    "SurfaceFinish",
+    "TerrainType",
     "Roughness",
     "Thread",
     "GeneralTolerance",
@@ -156,9 +156,9 @@ _RE_THREAD = re.compile(
     re.I,
 )
 
-# V.3.9: dimension *classification* lives in ``_determine_dimension_type`` (explicit
+# V.4.0: dimension *classification* lives in ``_determine_dimension_type`` (explicit
 # ``re.search`` order). LaTeX fragments are matched case-sensitively; ASCII callouts
-# use inline ``(?i)…`` only — the raw string is never passed through ``.upper()``.
+# use ``re.IGNORECASE`` — the raw string is never passed through ``.upper()``.
 
 # Extra gate for _classify: LaTeX / GD&T hints that are not covered by coarse R/Ø/°/M rules.
 _RE_CLASSIFY_SYMBOL_OR_LATEX = re.compile(
@@ -467,116 +467,157 @@ def _classify(text: str) -> DimensionType | None:
 
 
 def _determine_dimension_type(text: str) -> DimensionType:
-    """GD&T / engineering dimension label from nominal text (V.3.9).
+    """GD&T / engineering dimension label from nominal text (V.4.0).
 
-    LaTeX fragments (``\\times``, ``\\emptyset``, …) are matched **case-sensitively**
-    so the input is never upper-cased wholesale. ASCII callouts use inline
-    ``(?i)…`` groups only. Order is specific-before-broad (Chamfer before Angle,
-    Thread before GeneralTolerance, etc.).
+    Priority-ordered checks (engineering symbols + LaTeX). Free-text tokens use
+    ``re.search(..., re.IGNORECASE)``; LaTeX command names are matched on the raw
+    string (case-sensitive) so ``\\times`` / ``\\Phi`` / ``\\pm`` stay valid TeX.
+
+    Angle and Thread rules are applied after Chamfer and before GeneralTolerance so
+    degree dimensions and thread callouts are not misclassified as linear.
     """
     s = text.strip()
     if not s:
         return "Linear"
 
+    # 1. Spherical diameter — before plain ``\Phi`` / ``\emptyset`` / diameter symbols.
     if (
-        re.search(
-            r"S\s*(?:[\u2300\u2205\u00D8Øø⌀]|\\emptyset|\\phi|\\Phi|\\varphi)",
-            s,
-        )
-        or re.search(r"(?i)S\s+DIA\.?", s)
+        re.search(r"S\s*[\u2205\u2300\u00D8Øø⌀∅]", s)
+        or re.search(r"S\s*DIA", s, re.IGNORECASE)
+        or re.search(r"S\s*\\Phi", s)
+        or re.search(r"S\s*\\emptyset", s)
     ):
         return "SphericalDiameter"
 
+    # 2. Diameter
     if (
-        re.search(r"[\u2300\u2205\u00D8Øø⌀]", s)
-        or re.search(r"\\emptyset|\\phi|\\Phi|\\varphi", s)
-        or re.search(r"(?i)\bDIA\.?\b", s)
+        re.search(r"[\u2205\u2300\u00D8Øø⌀∅]", s)
+        or re.search(r"\\emptyset|\\Phi|\\varphi|\\phi", s)
+        or re.search(r"(?i)\bDIA\.?(?:\s|$|\d)", s)
     ):
         return "Diameter"
 
-    if re.search(r"(?i)(?:^|\s)R(?:\s+\d|\d|\s*[\d.,])", s) or re.search(
-        r"(?i)\bRAD\.?\b", s
-    ):
+    # 3. Radius — ``R`` then optional separator then a digit (avoids classifying ``Ra``).
+    if re.search(r"(?<![A-Za-z0-9])R\s*[.,]?\d", s, re.IGNORECASE):
         return "Radius"
 
-    if re.search(r"\\times", s) or re.search(
-        r"(?i)(?:x\s*45|x45|\bCHAM\.?\b)", s
-    ):
-        return "Chamfer"
-
+    # 4. Depth
     if (
-        re.search(r"\\downarrow", s)
-        or re.search(r"[\u2193\u23B4↓]", s)
-        or re.search(r"(?i)\bDEPTH\b", s)
+        re.search(r"↓", s)
+        or re.search(r"\u2193", s)
+        or re.search(r"\\downarrow", s)
     ):
         return "Depth"
 
-    if re.search(r"[\u2334\u2F0C]", s) or re.search(
-        r"(?i)\bC[\s.]?BORE\b|\bCB\b", s
+    # 5. Counterbore
+    if (
+        re.search(r"\u2334", s)
+        or re.search(r"\u2f0c", s, re.IGNORECASE)
+        or re.search(r"CBORE", s, re.IGNORECASE)
     ):
         return "Counterbore"
 
-    if re.search(r"[\u2335]", s) or re.search(r"(?i)\bCSK\b|\bC[\s.]?SINK\b", s):
+    # 6. Countersink — ``\bV\b`` limits false positives from words like ``VIEW``.
+    if (
+        re.search(r"⌵", s)
+        or re.search(r"\u2335", s)
+        or re.search(r"\bV\b", s, re.IGNORECASE)
+        or re.search(r"CSK", s, re.IGNORECASE)
+    ):
         return "Countersink"
 
-    if re.search(r"[\u25A1\u20DE]", s) or re.search(r"(?i)\bSQ\b", s):
+    # 7. Square
+    if (
+        re.search(r"\u25a1", s, re.IGNORECASE)
+        or re.search(r"\u20de", s, re.IGNORECASE)
+        or re.search(r"\bSQ\b", s, re.IGNORECASE)
+    ):
         return "Square"
 
-    if re.search(r"[\u2225]", s):
+    # 8. Parallelism
+    if re.search(r"∥", s) or re.search(r"\u2225", s):
         return "Parallelism"
 
-    if re.search(r"[\u27C2\u22A5]", s):
+    # 9. Perpendicularity (⊥ up tack and ⟂ perpendicular operator)
+    if re.search(r"⊥", s) or re.search(r"\u27c2", s, re.IGNORECASE) or re.search(
+        r"\u22a5", s, re.IGNORECASE
+    ):
         return "Perpendicularity"
 
-    if re.search(r"[\u2220]", s):
+    # 10. Angularity
+    if re.search(r"∠", s) or re.search(r"\u2220", s):
         return "Angularity"
 
-    if (
-        re.search(r"\^\{\s*\\circ\s*\}", s)
-        or re.search(r"\\circ", s)
-        or re.search(r"°|\u00B0", s)
-        or re.search(r"(?i)\bDEG\b", s)
-    ):
-        return "Angle"
-
-    if re.search(r"[\u2295\u2316]", s):
+    # 11. Position (include ⌖ for drawings that encode position that way)
+    if re.search(r"⊕", s) or re.search(r"\u2295", s) or re.search(r"\u2316", s):
         return "Position"
 
+    # 12. Concentricity (⦿ U+29BF, ◎ U+25CE)
     if re.search(r"[\u29BF\u25CE]", s):
         return "Concentricity"
 
-    if re.search(r"[\u2261]", s):
+    # 13. Symmetry
+    if re.search(r"≡", s) or re.search(r"\u2261", s):
         return "Symmetry"
 
-    if re.search(r"[\u25EF\u20DD]", s):
-        return "Circularity"
-
-    if re.search(r"[\u232D]", s) or re.search(r"(?i)\bCYL\b", s):
-        return "Cylindricity"
-
-    if re.search(r"[\u23E4]", s) or re.search(r"(?i)\bSTR\b", s):
+    # 14. Straightness — STR / lone geometric hyphen / Unicode straightness bar
+    if (
+        re.search(r"\bSTR\b", s, re.IGNORECASE)
+        or re.search(r"^\s*-\s*$", s)
+        or re.search(r"\u23e4", s, re.IGNORECASE)
+    ):
         return "Straightness"
 
-    if re.search(r"[\u221A]", s):
-        return "SurfaceFinish"
+    # 15. Circularity
+    if re.search(r"\u25ef", s, re.IGNORECASE) or re.search(
+        r"\u20dd", s, re.IGNORECASE
+    ):
+        return "Circularity"
 
-    if re.search(r"\b(?:Ra|RA)\b", s):
+    # 16. Cylindricity
+    if re.search(r"\u232d", s, re.IGNORECASE) or re.search(
+        r"\bCYL\b", s, re.IGNORECASE
+    ):
+        return "Cylindricity"
+
+    # 17. Terrain type (טיב שטח)
+    if re.search(r"√", s) or re.search(r"\u221a", s, re.IGNORECASE):
+        return "TerrainType"
+
+    # 18. Roughness
+    if re.search(r"\bRa\b", s, re.IGNORECASE):
         return "Roughness"
 
-    if re.search(
-        r"(?i)(?:\bUN(?:C|F|EF)\b|#\s*\d+\s*-\s*\d+|#\d+-\d+|\bM\s*\d+|\bM\d+)",
-        s,
+    # 19. Chamfer — ``\times`` must stay case-sensitive (``\Times`` is invalid TeX).
+    if (
+        re.search(r"\\times\s*45", s)
+        or re.search(r"x\s*45|x45", s, re.IGNORECASE)
+        or re.search(r"CHAM", s, re.IGNORECASE)
     ):
+        return "Chamfer"
+
+    # 19b. Angle (degrees) — after angularity ``∠``; distinct from chamfer ``x 45``.
+    if (
+        re.search(r"\^\{\s*\\circ\s*\}", s)
+        or re.search(r"\\circ", s)
+        or re.search(r"°|\u00b0", s)
+        or re.search(r"\bDEG\b", s, re.IGNORECASE)
+    ):
+        return "Angle"
+
+    # 19c. Thread — same token shapes as ``_RE_THREAD`` / detection gate.
+    if _RE_THREAD.search(s):
         return "Thread"
 
-    if re.search(r"[\u00B1±]|\\pm", s):
+    # 20. General tolerance
+    if re.search(r"±", s) or re.search(r"\\pm", s):
         return "GeneralTolerance"
 
     return "Linear"
 
 
 def dimension_type_for_export(it: FAIItem) -> DimensionType:
-    """Type column for CSV / API: re-derive from ``it.text`` with V.3.9 rules.
+    """Type column for CSV / API: re-derive from ``it.text`` with V.4.0 rules.
 
     Notes and title-block general-tolerance rows keep their stored kinds because
     their ``text`` is not a full dimension string (e.g. bare ``0.1``).
