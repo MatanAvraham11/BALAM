@@ -86,10 +86,10 @@ def _verify_cookie(token: str | None) -> bool:
     return hmac.compare_digest(token, expected)
 
 
-def _require_auth(request: Request) -> None:
-    token = request.cookies.get(_AUTH_COOKIE)
-    if not _verify_cookie(token):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+def _require_auth(_request: Request) -> None:
+    # TEMP (V.4.1): אימות מבוטל לבדיקות. להחזיר לפני מיזוג ל-main.
+    # TEMP: Auth bypass for V.4.1. MUST restore before merging to main.
+    return
 
 
 # ---------------------------------------------------------------------------
