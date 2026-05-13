@@ -29,13 +29,26 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 DimensionType = Literal[
-    "Radius",
-    "Diameter",
     "Angle",
-    "Linear",
-    "Thread",
-    "Note",
+    "Angularity",
+    "Chamfer",
+    "Concentricity",
+    "Counterbore",
+    "Countersink",
+    "Depth",
+    "Diameter",
     "GeneralTolerance",
+    "Linear",
+    "Note",
+    "Parallelism",
+    "Perpendicularity",
+    "Position",
+    "Radius",
+    "Roughness",
+    "SphericalDiameter",
+    "Square",
+    "Symmetry",
+    "Thread",
 ]
 
 
@@ -439,29 +452,93 @@ def _classify(text: str) -> DimensionType | None:
 
 
 def _determine_dimension_type(text: str) -> DimensionType:
-    """Refined engineering dimension tag from raw nominal text (symbol-first).
+    """Classify nominal dimension / GD&T text for export ``Type`` column (V.5.0).
 
-    Order: Diameter → Radius → Angle → Thread → Linear. Uses PDF/extracted
-    strings only (no geometry). ``Linear`` is the fallback.
+    Symbol-first order: spherical diameter → GD&T → finish/chamfer/general tol
+    → depth/cbore/csink/square → diameter → radius → thread → ``DEG`` angle
+    → ``Linear``. LaTeX fragments (``\\...``) are matched case-sensitively;
+    common drafting tokens use case-insensitive word matches where noted.
 
-    * **Diameter:** Ø / ⌀ / ø / U+2300 / U+2205 / ``DIA``.
-    * **Radius:** ``R`` word + optional space + number (``R 0.50``, ``R1.0``).
-    * **Angle:** ``°`` or ``DEG``.
-    * **Thread:** ``UNC``, ``UNF``, metric ``M`` + digit, or ``#``-dash callouts
-      (e.g. ``#6-32``).
+    On invalid *text* or any unexpected error, returns ``Linear`` so parsing
+    never aborts the PDF pipeline.
     """
+    if text is None or not isinstance(text, str):
+        return "Linear"
     s = text.strip()
     if not s:
         return "Linear"
-    if _RE_DIAMETER_CLASS.search(s):
-        return "Diameter"
-    if _RE_RADIUS_CLASS.search(s):
-        return "Radius"
-    if _RE_ANGLE_CLASS.search(s):
-        return "Angle"
-    if _RE_THREAD_CLASS.search(s):
-        return "Thread"
-    return "Linear"
+
+    try:
+
+        def hit(pat: str, flags: int = 0) -> bool:
+            return re.search(pat, s, flags) is not None
+
+        # --- Spherical diameter (before plain diameter) ---
+        if hit(r"S\s*[⌀Øø∅\u2205]") or hit(r"S\s+DIA\b", re.I) or hit(
+            r"S\\Phi"
+        ) or hit(r"S\\emptyset"):
+            return "SphericalDiameter"
+
+        # --- GD&T & symbols (before generic diameter / radius) ---
+        if hit(r"[⊕\u2295]") or hit(r"\\oplus"):
+            return "Position"
+        if hit(r"[∥\u2225]"):
+            return "Parallelism"
+        if hit(r"[⊥\u22A5\u27C2]"):
+            return "Perpendicularity"
+        if hit(r"[∠\u2220]") or hit(r"°|\u00B0") or hit(r"\\circ"):
+            return "Angularity"
+        if hit(r"[⦿\u25CE]"):
+            return "Concentricity"
+        if hit(r"[≡\u2261]"):
+            return "Symmetry"
+
+        # --- Surface / finish / chamfer / general tolerance callouts ---
+        if hit(r"[√\u221A]") or hit(r"\bRa\b") or hit(r"\bRA\b"):
+            return "Roughness"
+        if (
+            hit(r"(?i)\d+\s*x\s*45\b")
+            or hit(r"(?i)\d+x45\b")
+            or hit(r"\\times\s*45\b")
+            or hit(r"\\times45\b")
+            or hit(r"\bCHAM\b", re.I)
+        ):
+            return "Chamfer"
+        if hit(r"±") or hit(r"\\pm\b"):
+            return "GeneralTolerance"
+
+        if hit(r"[↓\u2193]") or hit(r"\\downarrow") or hit(r"\bDEPTH\b", re.I):
+            return "Depth"
+        if hit(r"⼌|\u2334") or hit(r"\bCBORE\b", re.I):
+            return "Counterbore"
+        if hit(r"[⌵\u2335]") or hit(r"\bCSK\b", re.I) or hit(r"\bV\b"):
+            return "Countersink"
+        if hit(r"\u25A1") or hit(r"□") or hit(r"\bSQ\b", re.I):
+            return "Square"
+
+        # --- Diameter & radius (Unicode + LaTeX + words) ---
+        if (
+            hit(r"[⌀Øø∅\u2205\u2300\u03A6\u03C6]")
+            or hit(r"\bDIA\b", re.I)
+            or hit(r"\\Phi")
+            or hit(r"\\phi")
+            or hit(r"\\emptyset")
+        ):
+            return "Diameter"
+        if hit(r"\bR\s*[\d.,]", re.I) or hit(r"\bR\s+\d", re.I) or hit(
+            r"\bRAD\b", re.I
+        ):
+            return "Radius"
+
+        if _RE_THREAD_CLASS.search(s):
+            return "Thread"
+        if hit(r"\bDEG\b", re.I):
+            return "Angle"
+        return "Linear"
+    except re.error:
+        return "Linear"
+    except Exception:
+        return "Linear"
 
 
 def _looks_like_dimension(text: str) -> bool:
