@@ -8,13 +8,19 @@ however, lives in real text spans with ``size > 0`` and stable
 ``x``-coordinates, so a coordinate-based pdfplumber pass recovers
 everything we need:
 
+**Buyer OCR:** install the ``tesseract`` binary and Hebrew traineddata (``heb``
+must appear in ``tesseract --list-langs``). Example (macOS): ``brew install
+tesseract tesseract-lang``. Set ``RAFAEL_BUYER_OCR=0`` to force decode-only
+(no raster OCR).
+
 Globals (page-header band, y ≲ 140 pt)
     * RFQ number      — sz=10, x≈133–163, y≈55      (also in ``FAX_INFO:…``)
     * Issue date      — sz=8,  x≈251–295, y≈85
     * Buyer e-mail    — sz=9,  x≈100–180, y≈100     (anchor for geometry only)
-    * Buyer name      — **V.5.3**: ``pdfplumber`` ``chars`` with ``size < 1`` in a
-      narrow band **immediately above** the Rafael e-mail; decoded by
-      ``decode_rafael_hebrew_font`` (subset calibration + optional PUA offset).
+    * Buyer name      — **V.5.3**: pseudo-glyphs above the e-mail are decoded by
+      ``decode_rafael_hebrew_font`` when the PDF exposes Hebrew / PUA; otherwise
+      a **raster OCR** pass (``pytesseract`` + ``heb``) on that header strip reads
+      arbitrary buyer names (no per-RFQ name table).
     * Buyer phone     — sz=9,  x≈130–180, y≈88
     * Submission date — first ``dd/mm/yyyy`` in **page-1 header crop** only
       (``y ≤ _HEADER_Y_MAX``); if absent, issue date.
@@ -36,8 +42,11 @@ then globals + locals (``\u05d6\u05de\u05df \u05d0\u05e1\u05e4\u05e7\u05d4 \u05d
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 from datetime import date, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +117,11 @@ _HEADER_Y_MAX = 140.0
 # Buyer-name line sits a few pt **above** the e-mail row (pdfplumber ``top``).
 _BUYER_LINE_DY_ABOVE_EMAIL = 8.0
 _BUYER_LINE_DY_TOP_MARGIN = 0.5
+# Header strip rasterised for OCR when text-layer Hebrew is missing.
+_BUYER_OCR_DPI = 240
+_BUYER_OCR_PAD_Y = 2.0
+_BUYER_OCR_PAD_X_LEFT = 130.0
+_BUYER_OCR_PAD_X_RIGHT = 90.0
 
 # Submission-date pattern (dd/mm/yyyy)
 _RE_SUB_DATE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
@@ -134,14 +148,6 @@ _RAF_PUA_BLOCK_START = 0xF0E0
 _RAF_PUA_BLOCK_END = 0xF0FF
 _HEB_LETTER_BASE = 0x05D0
 _HEB_LETTER_LAST = 0x05EA
-
-# Frozen calibration: raw glyph line (without trailing ``Ł``) → Unicode buyer
-# name, measured on ``RFQ_1294668_684471`` / ``684070`` / ``684196``.
-_RAF_SUBSET_LINE_TO_BUYER: dict[str, str] = {
-    "JR=,/JR(cid:236)": "חיים קאופמן",
-    "fnWGJfn(cid:236)": "שרה שירן",
-    "cmUGJcm(cid:236)": "יוסי שני",
-}
 
 _RE_CID = re.compile(r"\(cid:(\d+)\)")
 
@@ -211,15 +217,16 @@ def decode_rafael_hebrew_font(raw: str) -> str:
     Pipeline:
 
     1. Strip invisible bidi / ZWJ, trailing ``Ł`` (visual label noise).
-    2. If the string (after ``(cid:…)`` canonicalisation) matches a **frozen**
-       calibration entry built from reference RFQs, return that Hebrew name.
-    3. Replace each ``(cid:N)`` with ``chr(N)`` when *N* lies in the Hebrew
+    2. Replace each ``(cid:N)`` with ``chr(N)`` when *N* lies in the Hebrew
        Unicode block (some exports embed codepoints this way).
-    4. Map each code point in ``0xF0E0…0xF0FF`` to ``U+05D0 + (cp - 0xF0E0)``
+    3. Map each code point in ``0xF0E0…0xF0FF`` to ``U+05D0 + (cp - 0xF0E0)``
        while the result stays ``≤ U+05EA`` (CAD PUA convention from the spec).
-    5. If the decoded string is mostly Hebrew letters, optionally prefer the
+    4. If the decoded string is mostly Hebrew letters, optionally prefer the
        **visual reversal** ``[::-1]`` when that yields a higher Hebrew ratio
        (Visual Hebrew / LTR extraction order).
+
+    Rafael's broken subset fonts usually yield no Hebrew here; the parser then
+    falls back to OCR on the same header strip (see ``_detect_buyer_name``).
     """
     if not raw or not raw.strip():
         return ""
@@ -227,10 +234,6 @@ def decode_rafael_hebrew_font(raw: str) -> str:
     s = raw.replace("\u200f", "").replace("\u200e", "")
     s = s.replace("\u200c", "").replace("\u200d", "")
     s = s.strip().rstrip("\u0141").strip()  # trailing Ł (U+0141)
-
-    key = _canonical_subset_buyer_key(s)
-    if key in _RAF_SUBSET_LINE_TO_BUYER:
-        return _RAF_SUBSET_LINE_TO_BUYER[key]
 
     s2 = _RE_CID.sub(_cid_to_hebrew_if_in_block, s)
     mapped = "".join(_map_pua_or_pass(ch) for ch in s2)
@@ -252,12 +255,99 @@ def decode_rafael_hebrew_font(raw: str) -> str:
     return forward
 
 
-def _canonical_subset_buyer_key(s: str) -> str:
-    """Normalise ``(cid:007)`` vs ``(cid:7)`` for dict lookup."""
-    def norm_cid(m: re.Match) -> str:
-        return f"(cid:{int(m.group(1))})"
+def _hebrew_letter_count(s: str) -> int:
+    return sum(1 for c in s if "\u0590" <= c <= "\u05FF")
 
-    return _RE_CID.sub(norm_cid, s)
+
+@lru_cache(maxsize=1)
+def _tesseract_hebrew_ready() -> bool:
+    """True when ``tesseract`` is on PATH and ``heb`` traineddata is installed."""
+    if os.environ.get("RAFAEL_BUYER_OCR", "").strip().lower() in (
+        "0", "false", "no", "off",
+    ):
+        return False
+    if not shutil.which("tesseract"):
+        return False
+    try:
+        import pytesseract  # noqa: PLC0415
+    except ModuleNotFoundError:
+        return False
+    try:
+        langs = pytesseract.get_languages(config="")
+    except Exception:
+        return False
+    return "heb" in langs
+
+
+def _buyer_crop_bbox_for_ocr(
+    page_w: float,
+    email_top: float,
+    email_x0: float,
+    email_x1: float,
+) -> tuple[float, float, float, float]:
+    """pdfplumber crop box ``(x0, top, x1, bottom)`` — same space as ``chars``."""
+    x_left = min(email_x0, email_x1)
+    x_right = max(email_x0, email_x1)
+    t0 = email_top - _BUYER_LINE_DY_ABOVE_EMAIL - _BUYER_OCR_PAD_Y
+    t1 = email_top - _BUYER_LINE_DY_TOP_MARGIN + _BUYER_OCR_PAD_Y
+    x0 = max(0.0, x_left - _BUYER_OCR_PAD_X_LEFT)
+    x1 = min(page_w, x_right + _BUYER_OCR_PAD_X_RIGHT)
+    return (x0, t0, x1, t1)
+
+
+def _clean_ocr_buyer_text(text: str) -> str:
+    """Pick the line richest in Hebrew letters and drop obvious OCR junk."""
+    raw_lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not raw_lines:
+        return ""
+
+    def score_line(ln: str) -> int:
+        return sum(1 for c in ln if "\u0590" <= c <= "\u05FF")
+
+    best = max(raw_lines, key=score_line)
+    if score_line(best) < 2:
+        return ""
+    # Keep Hebrew, spaces, geresh / gershayim; drop isolated Latin digits/symbols
+    kept: list[str] = []
+    for ch in best:
+        if "\u0590" <= ch <= "\u05FF" or ch in " \u05f3\u05f4":
+            kept.append(ch)
+        elif ch.isspace():
+            kept.append(" ")
+    out = re.sub(r"\s+", " ", "".join(kept)).strip()
+    return out
+
+
+def _ocr_rafael_buyer_name(
+    page0: Any,
+    email_top: float,
+    email_x0: float,
+    email_x1: float,
+) -> str:
+    """Read buyer Hebrew from a raster of the strip above the e-mail."""
+    if not _tesseract_hebrew_ready():
+        return ""
+    import pytesseract  # noqa: PLC0415
+
+    bbox = _buyer_crop_bbox_for_ocr(
+        float(page0.width),
+        email_top,
+        email_x0,
+        email_x1,
+    )
+    if bbox[1] >= bbox[3] or bbox[0] >= bbox[2]:  # degenerate crop
+        return ""
+    cropped = page0.crop(bbox)
+    img = cropped.to_image(resolution=_BUYER_OCR_DPI).original
+    try:
+        raw = pytesseract.image_to_string(
+            img,
+            lang="heb",
+            config="--psm 7 -c preserve_interword_spaces=1",
+        )
+    except Exception:
+        return ""
+    return _clean_ocr_buyer_text(raw)
 
 
 def _cid_to_hebrew_if_in_block(m: re.Match) -> str:
@@ -330,16 +420,23 @@ def _extract_buyer_raw_glyph_line(page: Any, email_top: float, email_x1: float) 
     return "".join(str(c.get("text") or "") for c in chars)
 
 
-def _detect_buyer_from_subset_font(
+def _detect_buyer_name(
     page0: Any,
     clean_words_page0: list[dict[str, Any]],
 ) -> str:
+    """Buyer Hebrew: text-layer decode when possible, else header-strip OCR."""
     band = _find_buyer_email_band(clean_words_page0)
     if band is None:
         return ""
-    email_top, _email_x0, email_x1 = band
+    email_top, email_x0, email_x1 = band
     raw = _extract_buyer_raw_glyph_line(page0, email_top, email_x1)
-    return decode_rafael_hebrew_font(raw)
+    decoded = decode_rafael_hebrew_font(raw)
+    if _hebrew_letter_count(decoded) >= 2:
+        return re.sub(r"\s+", " ", decoded.strip()).strip()
+    ocr = _ocr_rafael_buyer_name(page0, email_top, email_x0, email_x1)
+    if ocr:
+        return ocr
+    return decoded.strip() if decoded else ""
 
 
 def _detect_submission_date_header_band(
@@ -404,7 +501,7 @@ def _extract_globals(pdf: Any) -> dict[str, Any]:
 
     rfq_number = _detect_rfq_number(pages_words)
     issue_date = _detect_issue_date(pages_words)
-    buyer_name = _detect_buyer_from_subset_font(page0, pages_words[0])
+    buyer_name = _detect_buyer_name(page0, pages_words[0])
     submission_date = _detect_submission_date_header_band(page0, issue_date)
 
     return {

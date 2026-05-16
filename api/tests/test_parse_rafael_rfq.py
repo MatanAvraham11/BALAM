@@ -34,6 +34,7 @@ from parse_rafael_rfq import (  # noqa: E402
     _classify_fai_digit,
     _format_issue_date,
     _parse_dmy,
+    _tesseract_hebrew_ready,
     decode_rafael_hebrew_font,
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
@@ -63,7 +64,7 @@ _PDF_CASE_DEFS = [
             _DOWNLOADS / "RFQ_1294668_684070.pdf",
         ],
         "rfq": "684070",
-        "buyer": "שרה שירן",
+        "buyer": "שירן סורני",
         "parts": 1,
         "rows": 7,
     },
@@ -73,7 +74,7 @@ _PDF_CASE_DEFS = [
             _DOWNLOADS / "RFQ_1294668_684196 (1).pdf",
         ],
         "rfq": "684196",
-        "buyer": "יוסי שני",
+        "buyer": "יוסי שלום",
         "parts": 5,
         "rows": 18,
     },
@@ -124,19 +125,12 @@ class ParseDmyTests(unittest.TestCase):
 
 
 class DecodeRafaelHebrewFontTests(unittest.TestCase):
-    def test_calibrated_subset_lines(self):
-        self.assertEqual(
-            decode_rafael_hebrew_font("JR=,/JR(cid:236)Ł"),
-            "חיים קאופמן",
-        )
-        self.assertEqual(
-            decode_rafael_hebrew_font("fnWGJfn(cid:236)Ł"),
-            "שרה שירן",
-        )
-        self.assertEqual(
-            decode_rafael_hebrew_font("cmUGJcm(cid:236)Ł"),
-            "יוסי שני",
-        )
+    def test_subset_placeholder_lines_yield_no_hebrew(self):
+        """ASCII / (cid) stand-ins do not decode without a real CMap or OCR."""
+        self.assertEqual(decode_rafael_hebrew_font("JR=,/JR(cid:236)Ł"), "")
+        self.assertEqual(decode_rafael_hebrew_font("fnWGJfn(cid:236)Ł"), "")
+        self.assertEqual(decode_rafael_hebrew_font("cmUGJcm(cid:236)Ł"), "")
+        self.assertEqual(decode_rafael_hebrew_font("JR=,/JR(cid:0236)Ł"), "")
 
     def test_pua_linear_block(self):
         # 0xF0E0 → U+05D0 (א), 0xF0E1 → ב, …
@@ -239,7 +233,10 @@ class PdfSmokeTests(unittest.TestCase):
                 rows = flatten_rafael_to_rows(rfq)
 
                 self.assertEqual(rfq.rfq_number, case["rfq"])
-                self.assertEqual(rfq.buyer_name, case["buyer"])
+                if _tesseract_hebrew_ready():
+                    self.assertEqual(rfq.buyer_name, case["buyer"])
+                else:
+                    self.assertIsInstance(rfq.buyer_name, str)
                 self.assertIsNotNone(_parse_dmy(rfq.submission_date))
                 self.assertEqual(len(rfq.parts), case["parts"])
                 self.assertEqual(len(rows), case["rows"])
@@ -247,6 +244,8 @@ class PdfSmokeTests(unittest.TestCase):
                 for r in rows:
                     for col in RAFAEL_TXT_COLUMNS:
                         val = r.get(col, "")
+                        if col == "שם קניין" and not _tesseract_hebrew_ready():
+                            continue
                         self.assertNotIn(
                             val,
                             ("", None),
