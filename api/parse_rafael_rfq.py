@@ -13,7 +13,8 @@ everything we need:
 name table in code. Install ``tesseract`` + Hebrew traineddata (macOS:
 ``brew install tesseract tesseract-lang``). Set ``RAFAEL_BUYER_OCR=0`` to skip
 OCR (buyer column empty on subset-font RFQs). Vercel/serverless images need
-``tesseract-ocr`` + ``tesseract-ocr-heb`` in the build image.
+``tesseract-ocr`` + ``tesseract-ocr-heb`` in the build image. **No** OpenAI or
+other cloud APIs are used for the buyer name.
 
 Globals (page-header band, y ≲ 140 pt)
     * RFQ number      — sz=10, x≈133–163, y≈55      (also in ``FAX_INFO:…``)
