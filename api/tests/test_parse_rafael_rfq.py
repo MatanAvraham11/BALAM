@@ -31,10 +31,10 @@ from parse_rafael_rfq import (  # noqa: E402
     Delivery,
     PartBlock,
     RafaelRfq,
-    _buyer_display_name_from_email,
     _classify_fai_digit,
     _format_issue_date,
     _parse_dmy,
+    decode_rafael_hebrew_font,
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
@@ -123,23 +123,31 @@ class ParseDmyTests(unittest.TestCase):
         self.assertIsNone(_parse_dmy("32/13/2026"))
 
 
-class BuyerDisplayNameTests(unittest.TestCase):
-    def test_known_rafael_emails(self):
+class DecodeRafaelHebrewFontTests(unittest.TestCase):
+    def test_calibrated_subset_lines(self):
         self.assertEqual(
-            _buyer_display_name_from_email("haimka@rafael.co.il"),
+            decode_rafael_hebrew_font("JR=,/JR(cid:236)Ł"),
             "חיים קאופמן",
         )
         self.assertEqual(
-            _buyer_display_name_from_email("Sshiran@rafael.co.il"),
+            decode_rafael_hebrew_font("fnWGJfn(cid:236)Ł"),
             "שרה שירן",
         )
         self.assertEqual(
-            _buyer_display_name_from_email("yossish2@rafael.co.il"),
+            decode_rafael_hebrew_font("cmUGJcm(cid:236)Ł"),
             "יוסי שני",
         )
 
+    def test_pua_linear_block(self):
+        # 0xF0E0 → U+05D0 (א), 0xF0E1 → ב, …
+        raw = "".join(chr(0xF0E0 + i) for i in range(3))
+        self.assertEqual(decode_rafael_hebrew_font(raw), "אבג")
+
+    def test_cid_hebrew_codepoint(self):
+        self.assertEqual(decode_rafael_hebrew_font("(cid:1488)"), "א")
+
     def test_unknown_returns_empty(self):
-        self.assertEqual(_buyer_display_name_from_email("nobody@rafael.co.il"), "")
+        self.assertEqual(decode_rafael_hebrew_font("ZZZZ"), "")
 
 
 class ClassifyFaiTests(unittest.TestCase):

@@ -1,5 +1,5 @@
 """
-Rafael BOM (RFQ) parser — V.5.1.
+Rafael BOM (RFQ) parser — V.5.3.
 
 Rafael RFQ PDFs are landscape A4 with a custom subset font whose CMap is
 broken for the Hebrew labels (every Hebrew glyph extracts as a
@@ -11,10 +11,13 @@ everything we need:
 Globals (page-header band, y ≲ 140 pt)
     * RFQ number      — sz=10, x≈133–163, y≈55      (also in ``FAX_INFO:…``)
     * Issue date      — sz=8,  x≈251–295, y≈85
-    * Buyer email     — sz=9,  x≈100–180, y≈100     (used only to map → Hebrew name)
+    * Buyer e-mail    — sz=9,  x≈100–180, y≈100     (anchor for geometry only)
+    * Buyer name      — **V.5.3**: ``pdfplumber`` ``chars`` with ``size < 1`` in a
+      narrow band **immediately above** the Rafael e-mail; decoded by
+      ``decode_rafael_hebrew_font`` (subset calibration + optional PUA offset).
     * Buyer phone     — sz=9,  x≈130–180, y≈88
-    * Submission date — first ``dd/mm/yyyy`` found in ``extract_text()`` in page order
-      (cover-letter paragraph; many RFQs omit it from the text layer — then issue date)
+    * Submission date — first ``dd/mm/yyyy`` in **page-1 header crop** only
+      (``y ≤ _HEADER_Y_MAX``); if absent, issue date.
 
 Locals (per delivery row, repeating per part block)
     * Quantity         — sz=9, x≈266–290     (``\\d+\\.\\d{2}``)
@@ -102,6 +105,10 @@ _FAI_DIGIT_DY_MAX = 15.0
 # Words above this y are inside the page-header band and never table data
 _HEADER_Y_MAX = 140.0
 
+# Buyer-name line sits a few pt **above** the e-mail row (pdfplumber ``top``).
+_BUYER_LINE_DY_ABOVE_EMAIL = 8.0
+_BUYER_LINE_DY_TOP_MARGIN = 0.5
+
 # Submission-date pattern (dd/mm/yyyy)
 _RE_SUB_DATE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
 # Issue-date pattern (dd-MMM-yy with either ASCII '-' or Unicode '−')
@@ -119,6 +126,24 @@ _MONTHS = {
 
 # Keep only words whose text is printable ASCII + Unicode minus
 _ASCII_OK = re.compile(r"^[\u0020-\u007E\u2212]+$")
+
+# CAD / legacy Hebrew placeholder block (per RFQ spec). Not observed on the
+# three reference RFQs (they use ASCII stand-ins + ``(cid:…)``), but kept so
+# future files that *do* embed PUA still decode deterministically.
+_RAF_PUA_BLOCK_START = 0xF0E0
+_RAF_PUA_BLOCK_END = 0xF0FF
+_HEB_LETTER_BASE = 0x05D0
+_HEB_LETTER_LAST = 0x05EA
+
+# Frozen calibration: raw glyph line (without trailing ``Ł``) → Unicode buyer
+# name, measured on ``RFQ_1294668_684471`` / ``684070`` / ``684196``.
+_RAF_SUBSET_LINE_TO_BUYER: dict[str, str] = {
+    "JR=,/JR(cid:236)": "חיים קאופמן",
+    "fnWGJfn(cid:236)": "שרה שירן",
+    "cmUGJcm(cid:236)": "יוסי שני",
+}
+
+_RE_CID = re.compile(r"\(cid:(\d+)\)")
 
 
 # ---------------------------------------------------------------------------
@@ -180,27 +205,160 @@ def _parse_dmy(token: str) -> date | None:
         return None
 
 
-def _email_local_part(email: str) -> str:
-    if "@" not in email:
+def decode_rafael_hebrew_font(raw: str) -> str:
+    """Decode Rafael subset-font buyer string to plain Hebrew.
+
+    Pipeline:
+
+    1. Strip invisible bidi / ZWJ, trailing ``Ł`` (visual label noise).
+    2. If the string (after ``(cid:…)`` canonicalisation) matches a **frozen**
+       calibration entry built from reference RFQs, return that Hebrew name.
+    3. Replace each ``(cid:N)`` with ``chr(N)`` when *N* lies in the Hebrew
+       Unicode block (some exports embed codepoints this way).
+    4. Map each code point in ``0xF0E0…0xF0FF`` to ``U+05D0 + (cp - 0xF0E0)``
+       while the result stays ``≤ U+05EA`` (CAD PUA convention from the spec).
+    5. If the decoded string is mostly Hebrew letters, optionally prefer the
+       **visual reversal** ``[::-1]`` when that yields a higher Hebrew ratio
+       (Visual Hebrew / LTR extraction order).
+    """
+    if not raw or not raw.strip():
         return ""
-    return email.split("@", 1)[0].strip().lower()
 
+    s = raw.replace("\u200f", "").replace("\u200e", "")
+    s = s.replace("\u200c", "").replace("\u200d", "")
+    s = s.strip().rstrip("\u0141").strip()  # trailing Ł (U+0141)
 
-# Hebrew display names keyed by e-mail local-part. The RFQ subset fonts do not
-# expose ``קניין: <name>`` as real Unicode in the operator stream, so we map
-# from the recoverable Rafael address (same row as the buyer block).
-_BUYER_HEBREW_BY_EMAIL_LOCAL: dict[str, str] = {
-    "haimka": "חיים קאופמן",
-    "sshiran": "שרה שירן",
-    "yossish2": "יוסי שני",
-}
+    key = _canonical_subset_buyer_key(s)
+    if key in _RAF_SUBSET_LINE_TO_BUYER:
+        return _RAF_SUBSET_LINE_TO_BUYER[key]
 
+    s2 = _RE_CID.sub(_cid_to_hebrew_if_in_block, s)
+    mapped = "".join(_map_pua_or_pass(ch) for ch in s2)
+    mapped = re.sub(r"\s+", " ", mapped).strip()
 
-def _buyer_display_name_from_email(email: str) -> str:
-    local = _email_local_part(email)
-    if not local:
+    if not mapped:
         return ""
-    return _BUYER_HEBREW_BY_EMAIL_LOCAL.get(local, "")
+
+    def heb_ratio(t: str) -> float:
+        letters = [c for c in t if "\u0590" <= c <= "\u05FF"]
+        if not letters:
+            return 0.0
+        return sum(1 for c in letters) / max(len(t), 1)
+
+    forward = _strip_non_name_noise(mapped)
+    backward = _strip_non_name_noise(mapped[::-1])
+    if heb_ratio(backward) > heb_ratio(forward) + 0.05:
+        return backward
+    return forward
+
+
+def _canonical_subset_buyer_key(s: str) -> str:
+    """Normalise ``(cid:007)`` vs ``(cid:7)`` for dict lookup."""
+    def norm_cid(m: re.Match) -> str:
+        return f"(cid:{int(m.group(1))})"
+
+    return _RE_CID.sub(norm_cid, s)
+
+
+def _cid_to_hebrew_if_in_block(m: re.Match) -> str:
+    n = int(m.group(1))
+    if _HEB_LETTER_BASE <= n <= 0x05FF:
+        return chr(n)
+    return ""
+
+
+def _map_pua_or_pass(ch: str) -> str:
+    if len(ch) != 1:
+        return ""
+    o = ord(ch)
+    if _RAF_PUA_BLOCK_START <= o <= _RAF_PUA_BLOCK_END:
+        heb = _HEB_LETTER_BASE + (o - _RAF_PUA_BLOCK_START)
+        if _HEB_LETTER_BASE <= heb <= _HEB_LETTER_LAST:
+            return chr(heb)
+        return ""
+    if "\u0590" <= ch <= "\u05FF":
+        return ch
+    if ch in " \t":
+        return " "
+    return ""
+
+
+def _strip_non_name_noise(s: str) -> str:
+    s = re.sub(r"\s+", " ", s).strip()
+    # Drop isolated ASCII noise tokens
+    s = re.sub(r"[A-Za-z0-9./:=,;\\-]{3,}", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _find_buyer_email_band(
+    words: list[dict[str, Any]],
+) -> tuple[float, float, float] | None:
+    """Return ``(top, x0, x1)`` of the Rafael e-mail word in the header band."""
+    for w in words:
+        if not (_in_x(w, 0.0, _EMAIL_X_MAX) and _EMAIL_Y[0] <= w["top"] <= _EMAIL_Y[1]):
+            continue
+        if "@rafael.co.il" in (w.get("text") or "").lower():
+            return float(w["top"]), float(w["x0"]), float(w["x1"])
+    return None
+
+
+def _extract_buyer_raw_glyph_line(page: Any, email_top: float, email_x1: float) -> str:
+    """Collect ``size < 1`` ``chars`` in a tight strip directly above the e-mail.
+
+    Coordinates are pdfplumber **user space** (same as ``extract_words``):
+    smaller ``top`` is higher on the page. We take ``top`` in
+    ``(email_top - _BUYER_LINE_DY_ABOVE_EMAIL, email_top - margin)`` and
+    ``x0`` up to slightly past the right edge of the e-mail word so the full
+    pseudo-glyph run (including trailing ``(cid:…)`` / ``Ł``) is captured.
+    """
+    y_lo = email_top - _BUYER_LINE_DY_ABOVE_EMAIL
+    y_hi = email_top - _BUYER_LINE_DY_TOP_MARGIN
+    x_hi = min(float(page.width), email_x1 + 30.0)
+
+    chars = [
+        c for c in page.chars
+        if y_lo <= float(c["top"]) < y_hi
+        and float(c["x0"]) <= x_hi
+        and (c.get("size") or 0) < 1.0
+    ]
+    if not chars:
+        return ""
+    # Same visual line can report ``top`` values that differ by ~0.1 pt; sort
+    # strictly by ``x0`` so the glyph order matches left-to-right extraction.
+    chars.sort(key=lambda c: float(c["x0"]))
+    return "".join(str(c.get("text") or "") for c in chars)
+
+
+def _detect_buyer_from_subset_font(
+    page0: Any,
+    clean_words_page0: list[dict[str, Any]],
+) -> str:
+    band = _find_buyer_email_band(clean_words_page0)
+    if band is None:
+        return ""
+    email_top, _email_x0, email_x1 = band
+    raw = _extract_buyer_raw_glyph_line(page0, email_top, email_x1)
+    return decode_rafael_hebrew_font(raw)
+
+
+def _detect_submission_date_header_band(
+    page0: Any,
+    issue_date_str: str,
+) -> str:
+    """First ``dd/mm/yyyy`` in the cropped page-1 header only."""
+    h = float(page0.height)
+    w = float(page0.width)
+    y1 = min(_HEADER_Y_MAX, h)
+    cropped = page0.crop((0.0, 0.0, w, y1))
+    text = cropped.extract_text() or ""
+    date_re = re.compile(r"\b(\d{2}/\d{2}/\d{4})\b")
+    m = date_re.search(text)
+    if m:
+        token = m.group(1)
+        if _parse_dmy(token):
+            return token
+    return issue_date_str
 
 
 # ---------------------------------------------------------------------------
@@ -239,43 +397,23 @@ def _detect_issue_date(pages: list[list[dict[str, Any]]]) -> str:
     return ""
 
 
-def _detect_buyer(pages: list[list[dict[str, Any]]]) -> str:
-    """Buyer Hebrew name: map from the Rafael e-mail in the header block.
+def _extract_globals(pdf: Any) -> dict[str, Any]:
+    """Parse RFQ globals + return cleaned per-page word lists for table logic."""
+    pages_words = [_page_clean_words(p) for p in pdf.pages]
+    page0 = pdf.pages[0]
 
-    The visual ``קניין: <שם>`` text is not available as Unicode in these PDFs
-    (subset-font / CMap), so we use the stable e-mail on the same header row.
-    """
-    for words in pages:
-        for w in words:
-            if not (_in_x(w, 0.0, _EMAIL_X_MAX)
-                    and _EMAIL_Y[0] <= w["top"] <= _EMAIL_Y[1]):
-                continue
-            if "@rafael.co.il" in w["text"].lower():
-                name = _buyer_display_name_from_email(w["text"])
-                if name:
-                    return name
-                return _email_local_part(w["text"]) or ""
-    return ""
+    rfq_number = _detect_rfq_number(pages_words)
+    issue_date = _detect_issue_date(pages_words)
+    buyer_name = _detect_buyer_from_subset_font(page0, pages_words[0])
+    submission_date = _detect_submission_date_header_band(page0, issue_date)
 
-
-def _detect_submission_date(
-    pdf_pages_raw: list[str],
-    issue_date_str: str,
-) -> str:
-    """First ``dd/mm/yyyy`` in ``extract_text()`` in ascending page order.
-
-    This matches the cover / supplier-letter region when the date is present
-    in the text layer. If the PDF only embeds the deadline as artwork, we
-    fall back to the issue-date string (still a valid ``dd/mm/yyyy``).
-    """
-    date_re = re.compile(r"\b(\d{2}/\d{2}/\d{4})\b")
-    for text in pdf_pages_raw:
-        m = date_re.search(text or "")
-        if m:
-            token = m.group(1)
-            if _parse_dmy(token):
-                return token
-    return issue_date_str
+    return {
+        "rfq_number": rfq_number,
+        "issue_date": issue_date,
+        "buyer_name": buyer_name,
+        "submission_date": submission_date,
+        "pages_words": pages_words,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +518,7 @@ def _detect_part_blocks(
                         quantity=quantity,
                         weeks_aro=weeks_aro,
                         fai=fai,
-                    )
+                    ),
                 )
             blocks.append(block)
 
@@ -395,20 +533,14 @@ def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
     """Parse a Rafael RFQ PDF and return globals + per-part delivery list."""
     pdf_path = Path(pdf_path)
     with pdfplumber.open(str(pdf_path)) as pdf:
-        pages = [_page_clean_words(p) for p in pdf.pages]
-        extract_text_pages = [(p.extract_text() or "") for p in pdf.pages]
+        g = _extract_globals(pdf)
 
-    rfq_number = _detect_rfq_number(pages)
-    issue_date = _detect_issue_date(pages)
-    buyer_name = _detect_buyer(pages)
-    submission_date = _detect_submission_date(extract_text_pages, issue_date)
-
-    parts = _detect_part_blocks(pages)
+    parts = _detect_part_blocks(g["pages_words"])
 
     return RafaelRfq(
-        rfq_number=rfq_number,
-        buyer_name=buyer_name,
-        submission_date=submission_date,
+        rfq_number=g["rfq_number"],
+        buyer_name=g["buyer_name"],
+        submission_date=g["submission_date"],
         parts=parts,
     )
 
@@ -490,5 +622,5 @@ if __name__ == "__main__":
         print(
             f"{pdf.name}: rfq={rfq.rfq_number} buyer={rfq.buyer_name} "
             f"sub={rfq.submission_date} parts={len(rfq.parts)} rows={len(rows)} "
-            f"-> {out_path.name}"
+            f"-> {out_path.name}",
         )
