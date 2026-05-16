@@ -1,4 +1,5 @@
 pdfplumber
+pytesseract
 openai
 pandas
 pydantic

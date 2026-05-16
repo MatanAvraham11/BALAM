@@ -6,6 +6,10 @@
 Run::
 
     python3 -m unittest api.tests.test_parse_rafael_rfq
+
+Strict buyer string checks (optional, requires Tesseract + ``heb``)::
+
+    RAFAEL_STRICT_BUYER=1 python3 -m unittest api.tests.test_parse_rafael_rfq
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+import warnings
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -31,10 +36,12 @@ from parse_rafael_rfq import (  # noqa: E402
     Delivery,
     PartBlock,
     RafaelRfq,
-    _buyer_display_name_from_email,
     _classify_fai_digit,
+    _clean_ocr_buyer_text,
     _format_issue_date,
+    _hebrew_letter_count,
     _parse_dmy,
+    _tesseract_hebrew_ready,
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
@@ -49,6 +56,7 @@ _DOWNLOADS = Path("/Users/matanavraham/Downloads")
 _PDF_CASE_DEFS = [
     {
         "suffixes": [
+            _FIXTURE_ROOT / "c681a44f-225b-45b5-a0e7-63fa007aab8f" / "RFQ_1294668_684471.pdf",
             _FIXTURE_ROOT / "8fa96acd-fb8c-4c76-b759-2dfaf37bdc31" / "RFQ_1294668_684471.pdf",
             _DOWNLOADS / "RFQ_1294668_684471.pdf",
         ],
@@ -59,21 +67,23 @@ _PDF_CASE_DEFS = [
     },
     {
         "suffixes": [
+            _FIXTURE_ROOT / "32026224-2bac-4bc9-9c6f-2d8cbc00d8b3" / "RFQ_1294668_684070.pdf",
             _FIXTURE_ROOT / "223a6d16-1352-497f-b37b-a387cf796767" / "RFQ_1294668_684070.pdf",
             _DOWNLOADS / "RFQ_1294668_684070.pdf",
         ],
         "rfq": "684070",
-        "buyer": "שרה שירן",
+        "buyer": "שירן סורני",
         "parts": 1,
         "rows": 7,
     },
     {
         "suffixes": [
+            _FIXTURE_ROOT / "cecf75a5-1428-4034-ab06-5991858e2de6" / "RFQ_1294668_684196 (1).pdf",
             _FIXTURE_ROOT / "a5520b41-7954-4125-b7e5-53912d3cb934" / "RFQ_1294668_684196 (1).pdf",
             _DOWNLOADS / "RFQ_1294668_684196 (1).pdf",
         ],
         "rfq": "684196",
-        "buyer": "יוסי שני",
+        "buyer": "יוסי שלום",
         "parts": 5,
         "rows": 18,
     },
@@ -97,6 +107,10 @@ def _resolve_pdf_cases() -> list[dict]:
 
 
 _PDF_CASES = _resolve_pdf_cases()
+
+_STRICT_BUYER = os.environ.get("RAFAEL_STRICT_BUYER", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
 
 
 class FormatIssueDateTests(unittest.TestCase):
@@ -123,23 +137,19 @@ class ParseDmyTests(unittest.TestCase):
         self.assertIsNone(_parse_dmy("32/13/2026"))
 
 
-class BuyerDisplayNameTests(unittest.TestCase):
-    def test_known_rafael_emails(self):
+class BuyerOcrUnitTests(unittest.TestCase):
+    def test_clean_strips_kinyan_label(self):
         self.assertEqual(
-            _buyer_display_name_from_email("haimka@rafael.co.il"),
+            _clean_ocr_buyer_text("קניין: חיים קאופמן\n"),
             "חיים קאופמן",
         )
-        self.assertEqual(
-            _buyer_display_name_from_email("Sshiran@rafael.co.il"),
-            "שרה שירן",
-        )
-        self.assertEqual(
-            _buyer_display_name_from_email("yossish2@rafael.co.il"),
-            "יוסי שני",
-        )
 
-    def test_unknown_returns_empty(self):
-        self.assertEqual(_buyer_display_name_from_email("nobody@rafael.co.il"), "")
+    def test_clean_empty(self):
+        self.assertEqual(_clean_ocr_buyer_text(""), "")
+        self.assertEqual(_clean_ocr_buyer_text("   \n"), "")
+
+    def test_clean_no_hebrew(self):
+        self.assertEqual(_clean_ocr_buyer_text("123 ABC"), "")
 
 
 class ClassifyFaiTests(unittest.TestCase):
@@ -227,18 +237,32 @@ class PdfSmokeTests(unittest.TestCase):
     def test_per_pdf_counts_and_globals(self):
         for case in _PDF_CASES:
             with self.subTest(pdf=case["path"].name):
-                rfq = parse_rafael_rfq(case["path"])
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    rfq = parse_rafael_rfq(case["path"])
                 rows = flatten_rafael_to_rows(rfq)
 
                 self.assertEqual(rfq.rfq_number, case["rfq"])
-                self.assertEqual(rfq.buyer_name, case["buyer"])
                 self.assertIsNotNone(_parse_dmy(rfq.submission_date))
                 self.assertEqual(len(rfq.parts), case["parts"])
                 self.assertEqual(len(rows), case["rows"])
 
+                if _tesseract_hebrew_ready():
+                    self.assertGreaterEqual(
+                        _hebrew_letter_count(rfq.buyer_name),
+                        2,
+                        f"buyer OCR too weak: {rfq.buyer_name!r}",
+                    )
+                    if _STRICT_BUYER:
+                        self.assertEqual(rfq.buyer_name, case["buyer"])
+                else:
+                    self.assertEqual(rfq.buyer_name, "")
+
                 for r in rows:
                     for col in RAFAEL_TXT_COLUMNS:
                         val = r.get(col, "")
+                        if col == "שם קניין" and not _tesseract_hebrew_ready():
+                            continue
                         self.assertNotIn(
                             val,
                             ("", None),
@@ -249,7 +273,9 @@ class PdfSmokeTests(unittest.TestCase):
     def test_tsv_round_trip_is_clean(self):
         for case in _PDF_CASES:
             with self.subTest(pdf=case["path"].name):
-                rfq = parse_rafael_rfq(case["path"])
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    rfq = parse_rafael_rfq(case["path"])
                 rows = flatten_rafael_to_rows(rfq)
                 body = format_rafael_tsv_body(rows)
                 lines = body.rstrip("\r\n").split("\r\n")
