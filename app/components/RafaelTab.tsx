@@ -22,6 +22,7 @@ type RafaelRow = {
 type RafaelResponse = {
   rfq_number: string;
   buyer_name: string;
+  buyer_ocr_status?: string;
   submission_date: string;
   rows: RafaelRow[];
   txt_base64: string;
@@ -39,7 +40,18 @@ const COLUMNS = [
   "FAI",
 ];
 
-export default function RafaelTab() {
+function buyerOcrHint(status: string | undefined): string | null {
+  if (!status || status === "ok") return null;
+  const m: Record<string, string> = {
+    skipped_no_tesseract:
+      "שם הקניין לא חולץ בשרת: אין Tesseract עם עברית. מקומית: brew install tesseract tesseract-lang",
+    email_band_not_found:
+      "לא נמצא מייל @rafael.co.il בעמוד — לא ניתן לעגן את אזור ה-OCR לשם הקניין",
+    ocr_empty:
+      "Tesseract רץ אך שם הקניין לא זוהה מהתמונה — נסה PDF אחר או בדוק התקנת heb",
+  };
+  return m[status] ?? `סטטוס OCR: ${status}`;
+}
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<RafaelResponse | null>(null);
@@ -154,7 +166,9 @@ export default function RafaelTab() {
         </div>
       )}
 
-      {data && (
+      {data && (() => {
+        const buyerHint = buyerOcrHint(data.buyer_ocr_status);
+        return (
         <>
           <InfoCard
             items={[
@@ -163,6 +177,11 @@ export default function RafaelTab() {
               { label: "תאריך סופי להגשה", value: data.submission_date || "—" },
             ]}
           />
+          {buyerHint ? (
+            <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
+              {buyerHint}
+            </p>
+          ) : null}
 
           <div className="text-base font-bold text-nativ-dark mt-2">
             שורות אספקה
@@ -175,7 +194,8 @@ export default function RafaelTab() {
           </button>
           <DataTable columns={COLUMNS} rows={data.rows} />
         </>
-      )}
+        );
+      })()}
     </div>
   );
 }

@@ -365,6 +365,7 @@ async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONRespons
         return JSONResponse(content={
             "rfq_number": rfq.rfq_number,
             "buyer_name": rfq.buyer_name,
+            "buyer_ocr_status": rfq.buyer_ocr_status,
             "submission_date": rfq.submission_date,
             "rows": rows,
             "txt_base64": base64.b64encode(txt_bytes).decode(),

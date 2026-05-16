@@ -10,6 +10,10 @@ Run::
 Strict buyer string checks (optional, requires Tesseract + ``heb``)::
 
     RAFAEL_STRICT_BUYER=1 python3 -m unittest api.tests.test_parse_rafael_rfq
+
+Buyer-OCR diagnostics on a PDF (requires paths to exist)::
+
+    python3 api/parse_rafael_rfq.py --diagnose /path/to/RFQ.pdf
 """
 
 from __future__ import annotations
@@ -42,46 +46,52 @@ from parse_rafael_rfq import (  # noqa: E402
     _hebrew_letter_count,
     _parse_dmy,
     _tesseract_hebrew_ready,
+    diagnose_rafael_buyer_pdf,
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
 )
 
-_FIXTURE_ROOT = Path(
-    "/Users/matanavraham/Library/Application Support/Cursor/User/"
-    "workspaceStorage/0d2fd20bb5cdba5e7b46d32eb8198854/pdfs"
-)
-_DOWNLOADS = Path("/Users/matanavraham/Downloads")
+_FIXTURES_DIR = _ROOT / "api" / "tests" / "fixtures" / "rafael"
+_WS_BASE = Path.home() / "Library/Application Support/Cursor/User/workspaceStorage"
+_DOWNLOADS = Path.home() / "Downloads"
+
+
+def _glob_workspace_pdfs(filename: str) -> list[Path]:
+    if not _WS_BASE.is_dir():
+        return []
+    return sorted(_WS_BASE.glob(f"*/pdfs/**/{filename}"))
+
+
+def _resolve_rafael_fixture(filename: str) -> Path | None:
+    candidates = [
+        _FIXTURES_DIR / filename,
+        *_glob_workspace_pdfs(filename),
+        _DOWNLOADS / filename,
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
 
 _PDF_CASE_DEFS = [
     {
-        "suffixes": [
-            _FIXTURE_ROOT / "c681a44f-225b-45b5-a0e7-63fa007aab8f" / "RFQ_1294668_684471.pdf",
-            _FIXTURE_ROOT / "8fa96acd-fb8c-4c76-b759-2dfaf37bdc31" / "RFQ_1294668_684471.pdf",
-            _DOWNLOADS / "RFQ_1294668_684471.pdf",
-        ],
+        "filename": "RFQ_1294668_684471.pdf",
         "rfq": "684471",
         "buyer": "חיים קאופמן",
         "parts": 6,
         "rows": 8,
     },
     {
-        "suffixes": [
-            _FIXTURE_ROOT / "32026224-2bac-4bc9-9c6f-2d8cbc00d8b3" / "RFQ_1294668_684070.pdf",
-            _FIXTURE_ROOT / "223a6d16-1352-497f-b37b-a387cf796767" / "RFQ_1294668_684070.pdf",
-            _DOWNLOADS / "RFQ_1294668_684070.pdf",
-        ],
+        "filename": "RFQ_1294668_684070.pdf",
         "rfq": "684070",
         "buyer": "שירן סורני",
         "parts": 1,
         "rows": 7,
     },
     {
-        "suffixes": [
-            _FIXTURE_ROOT / "cecf75a5-1428-4034-ab06-5991858e2de6" / "RFQ_1294668_684196 (1).pdf",
-            _FIXTURE_ROOT / "a5520b41-7954-4125-b7e5-53912d3cb934" / "RFQ_1294668_684196 (1).pdf",
-            _DOWNLOADS / "RFQ_1294668_684196 (1).pdf",
-        ],
+        "filename": "RFQ_1294668_684196 (1).pdf",
         "rfq": "684196",
         "buyer": "יוסי שלום",
         "parts": 5,
@@ -93,7 +103,7 @@ _PDF_CASE_DEFS = [
 def _resolve_pdf_cases() -> list[dict]:
     cases: list[dict] = []
     for d in _PDF_CASE_DEFS:
-        path = next((p for p in d["suffixes"] if p.exists()), None)
+        path = _resolve_rafael_fixture(d["filename"])
         if path is None:
             continue
         cases.append({
@@ -150,6 +160,17 @@ class BuyerOcrUnitTests(unittest.TestCase):
 
     def test_clean_no_hebrew(self):
         self.assertEqual(_clean_ocr_buyer_text("123 ABC"), "")
+
+    def test_clean_multiline_prefers_hebrew_name(self):
+        raw = "073-3356519\nקניין: יוסי שלום\n"
+        self.assertEqual(_clean_ocr_buyer_text(raw), "יוסי שלום")
+
+
+class DiagnoseBuyerTests(unittest.TestCase):
+    def test_diagnose_missing_file(self):
+        info = diagnose_rafael_buyer_pdf("/no/such/file.pdf")
+        self.assertFalse(info["exists"])
+        self.assertNotIn("parsed_buyer_ocr_status", info)
 
 
 class ClassifyFaiTests(unittest.TestCase):
@@ -253,10 +274,12 @@ class PdfSmokeTests(unittest.TestCase):
                         2,
                         f"buyer OCR too weak: {rfq.buyer_name!r}",
                     )
+                    self.assertEqual(rfq.buyer_ocr_status, "ok")
                     if _STRICT_BUYER:
                         self.assertEqual(rfq.buyer_name, case["buyer"])
                 else:
                     self.assertEqual(rfq.buyer_name, "")
+                    self.assertEqual(rfq.buyer_ocr_status, "skipped_no_tesseract")
 
                 for r in rows:
                     for col in RAFAEL_TXT_COLUMNS:

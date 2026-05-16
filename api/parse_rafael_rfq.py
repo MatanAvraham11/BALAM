@@ -16,11 +16,16 @@ OCR (buyer column empty on subset-font RFQs). Vercel/serverless images need
 ``tesseract-ocr`` + ``tesseract-ocr-heb`` in the build image. **No** OpenAI or
 other cloud APIs are used for the buyer name.
 
+On **Vercel** default Python serverless there is no system ``tesseract`` — the
+parser sets ``buyer_ocr_status`` to ``skipped_no_tesseract`` and leaves
+``buyer_name`` empty unless you deploy a runtime that installs Tesseract + Hebrew
+traineddata (e.g. custom container / self-hosted API).
+
 Globals (page-header band, y ≲ 140 pt)
     * RFQ number      — sz=10, x≈133–163, y≈55      (also in ``FAX_INFO:…``)
     * Issue date      — sz=8,  x≈251–295, y≈85
-    * Buyer e-mail    — sz=9,  x≈100–180, y≈100     (geometry anchor for OCR crop only)
-    * Buyer name      — Tesseract ``heb`` on a tight pdfplumber crop above the e-mail
+    * Buyer e-mail    — sz=9,  x≈100–180, y≈86–112   (geometry anchor for OCR crop only)
+    * Buyer name      — Tesseract ``heb`` on raster crop(s) above the e-mail (multi-window + PSM)
     * Buyer phone     — sz=9,  x≈130–180, y≈88
     * Submission date — first ``dd/mm/yyyy`` found in ``extract_text()`` in page order
       (cover-letter paragraph; many RFQs omit it from the text layer — then issue date)
@@ -81,6 +86,13 @@ class PartBlock(BaseModel):
 class RafaelRfq(BaseModel):
     rfq_number: str = Field(description='מספר בלם')
     buyer_name: str = Field(description="שם קניין")
+    buyer_ocr_status: str = Field(
+        default="",
+        description=(
+            "Diagnostic: ok | skipped_no_tesseract | email_band_not_found | "
+            "ocr_empty"
+        ),
+    )
     submission_date: str = Field(description="תאריך סופי להגשה (dd/mm/yyyy)")
     parts: list[PartBlock] = Field(default_factory=list)
 
@@ -95,7 +107,9 @@ _RFQ_Y = (50.0, 62.0)
 _ISSUE_DATE_X = (245.0, 305.0)
 _ISSUE_DATE_Y = (80.0, 90.0)
 _EMAIL_X_MAX = 200.0
-_EMAIL_Y = (95.0, 105.0)
+# Rafael header e-mail ``top`` (pdfplumber) — calibrated on reference RFQs; wide
+# enough for small template drift.
+_EMAIL_Y = (86.0, 112.0)
 
 # Per-row column x-bands
 _QTY_X = (255.0, 295.0)
@@ -115,12 +129,22 @@ _FAI_DIGIT_DY_MAX = 15.0
 # Words above this y are inside the page-header band and never table data
 _HEADER_Y_MAX = 140.0
 
-# Buyer OCR crop (pdfplumber ``top`` grows downward). Anchored on the e-mail word.
-_BUYER_OCR_DY_TOP = 19.0
-_BUYER_OCR_DY_BOTTOM = 11.0
+# Buyer OCR crop (pdfplumber ``top`` grows downward). Anchored on the e-mail
+# word's ``top``. The strip must cover the full ``קניין: …`` row (often ~10–14
+# pt below the BLM number, with a phone line between buyer and e-mail).
 _BUYER_OCR_PAD_X0 = 6.0
 _BUYER_OCR_PAD_X1 = 10.0
 _BUYER_OCR_DPI = 400
+# (dy_top, dy_bottom): crop vertical [email_top - dy_top, email_top - dy_bottom].
+_BUYER_OCR_WINDOWS: tuple[tuple[float, float], ...] = (
+    (38.0, 5.0),
+    (32.0, 4.0),
+    (44.0, 8.0),
+)
+_BUYER_OCR_PSM: tuple[str, ...] = (
+    "--psm 7 -c preserve_interword_spaces=1",
+    "--psm 6 -c preserve_interword_spaces=1",
+)
 
 # Submission-date pattern (dd/mm/yyyy)
 _RE_SUB_DATE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
@@ -207,13 +231,25 @@ def _hebrew_letter_count(s: str) -> int:
 def _find_buyer_email_band(
     words: list[dict[str, Any]],
 ) -> tuple[float, float, float] | None:
-    """Return ``(top, x0, x1)`` of the Rafael e-mail word in the header band."""
-    for w in words:
-        if not (_in_x(w, 0.0, _EMAIL_X_MAX) and _EMAIL_Y[0] <= w["top"] <= _EMAIL_Y[1]):
-            continue
-        if "@rafael.co.il" in (w.get("text") or "").lower():
-            return float(w["top"]), float(w["x0"]), float(w["x1"])
-    return None
+    """Return ``(top, x0, x1)`` of the Rafael e-mail anchor word."""
+
+    def _email_word(w: dict[str, Any]) -> bool:
+        t = (w.get("text") or "").lower()
+        return "@rafael.co.il" in t and _in_x(w, 0.0, _EMAIL_X_MAX)
+
+    strict = [
+        w for w in words
+        if _email_word(w) and _EMAIL_Y[0] <= w["top"] <= _EMAIL_Y[1]
+    ]
+    pool = strict if strict else [
+        w for w in words
+        if _email_word(w) and 55.0 <= w["top"] <= _HEADER_Y_MAX
+    ]
+    if not pool:
+        return None
+    centre = (_EMAIL_Y[0] + _EMAIL_Y[1]) / 2.0
+    best = min(pool, key=lambda w: abs(float(w["top"]) - centre))
+    return float(best["top"]), float(best["x0"]), float(best["x1"])
 
 
 def _buyer_ocr_crop_bbox(
@@ -221,30 +257,19 @@ def _buyer_ocr_crop_bbox(
     email_top: float,
     email_x0: float,
     email_x1: float,
+    dy_top: float,
+    dy_bottom: float,
 ) -> tuple[float, float, float, float]:
-    """pdfplumber crop ``(x0, top, x1, bottom)`` — strip above phone, below date noise."""
+    """pdfplumber crop ``(x0, top, x1, bottom)`` — strip above the e-mail anchor."""
     x0 = max(0.0, email_x0 - _BUYER_OCR_PAD_X0)
     x1 = min(page_w, email_x1 + _BUYER_OCR_PAD_X1)
-    top = email_top - _BUYER_OCR_DY_TOP
-    bottom = email_top - _BUYER_OCR_DY_BOTTOM
+    top = email_top - dy_top
+    bottom = email_top - dy_bottom
     return (x0, top, x1, bottom)
 
 
-def _clean_ocr_buyer_text(text: str) -> str:
-    """Strip OCR noise and the ``קניין:`` label; keep Hebrew letters + spaces."""
-    if not text or not text.strip():
-        return ""
-
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if not lines:
-        return ""
-
-    def score_line(ln: str) -> int:
-        return _hebrew_letter_count(ln)
-
-    best = max(lines, key=score_line)
-    s = best
-    # Drop leading label variants (Tesseract may split oddly)
+def _strip_kinyan_label(s: str) -> str:
+    """Remove leading ``קניין:`` / ``קנין:`` variants from one OCR line."""
     s = re.sub(
         r"^[:\s\u05f3\u05f4]*קניין[:\s\u05f3\u05f4]*",
         "",
@@ -255,18 +280,49 @@ def _clean_ocr_buyer_text(text: str) -> str:
         "",
         s,
     )
-    s = s.lstrip(": \u05f3\u05f4").strip()
+    return s.lstrip(": \u05f3\u05f4").strip()
 
+
+def _hebrew_only_spaced(s: str) -> str:
     kept: list[str] = []
     for ch in s:
         if "\u0590" <= ch <= "\u05FF":
             kept.append(ch)
         elif ch.isspace():
             kept.append(" ")
-    out = re.sub(r"\s+", " ", "".join(kept)).strip()
+    return re.sub(r"\s+", " ", "".join(kept)).strip()
+
+
+def _clean_one_buyer_ocr_line(ln: str) -> str:
+    s = _strip_kinyan_label(ln.strip())
+    out = _hebrew_only_spaced(s)
     if _hebrew_letter_count(out) < 2:
         return ""
     return out
+
+
+def _clean_ocr_buyer_text(text: str) -> str:
+    """Strip OCR noise and ``קניין:`` labels; keep the best Hebrew name candidate."""
+    if not text or not text.strip():
+        return ""
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+
+    best = ""
+    best_key = (-1, -1)  # (hebrew_count, len)
+
+    for ln in lines:
+        cleaned = _clean_one_buyer_ocr_line(ln)
+        if not cleaned:
+            continue
+        key = (_hebrew_letter_count(cleaned), len(cleaned))
+        if key > best_key:
+            best_key = key
+            best = cleaned
+
+    return best
 
 
 _MISSING_TESS_WARNED = False
@@ -298,44 +354,42 @@ def _ocr_rafael_buyer_name(
     email_x0: float,
     email_x1: float,
 ) -> str:
-    """Hebrew buyer line from a high-DPI raster of the strip above the e-mail."""
-    global _MISSING_TESS_WARNED
+    """Hebrew buyer line from high-DPI raster(s); tries several crops + PSM modes.
 
-    if not _tesseract_hebrew_ready():
-        if os.environ.get("RAFAEL_BUYER_OCR", "").strip().lower() not in (
-            "0", "false", "no", "off",
-        ) and not _MISSING_TESS_WARNED:
-            warnings.warn(
-                "Rafael buyer name empty: install tesseract + heb traineddata "
-                "and pytesseract (brew install tesseract tesseract-lang). "
-                "Set RAFAEL_BUYER_OCR=0 to silence.",
-                stacklevel=2,
-            )
-            _MISSING_TESS_WARNED = True
-        return ""
-
+    Call only when ``_tesseract_hebrew_ready()`` is true.
+    """
     import pytesseract  # noqa: PLC0415
 
-    bbox = _buyer_ocr_crop_bbox(
-        float(page0.width),
-        email_top,
-        email_x0,
-        email_x1,
-    )
-    if bbox[1] >= bbox[3] or bbox[0] >= bbox[2]:
-        return ""
+    page_w = float(page0.width)
+    best = ""
+    best_key = (-1, -1)
 
-    cropped = page0.crop(bbox)
-    img = cropped.to_image(resolution=_BUYER_OCR_DPI).original
-    try:
-        raw = pytesseract.image_to_string(
-            img,
-            lang="heb",
-            config="--psm 7 -c preserve_interword_spaces=1",
+    for dy_top, dy_bottom in _BUYER_OCR_WINDOWS:
+        bbox = _buyer_ocr_crop_bbox(
+            page_w, email_top, email_x0, email_x1, dy_top, dy_bottom,
         )
-    except Exception:
-        return ""
-    return _clean_ocr_buyer_text(raw)
+        if bbox[1] >= bbox[3] or bbox[0] >= bbox[2]:
+            continue
+        cropped = page0.crop(bbox)
+        img = cropped.to_image(resolution=_BUYER_OCR_DPI).original
+        for psm_cfg in _BUYER_OCR_PSM:
+            try:
+                raw = pytesseract.image_to_string(
+                    img,
+                    lang="heb",
+                    config=psm_cfg,
+                )
+            except Exception:
+                continue
+            cleaned = _clean_ocr_buyer_text(raw)
+            if not cleaned:
+                continue
+            key = (_hebrew_letter_count(cleaned), len(cleaned))
+            if key > best_key:
+                best_key = key
+                best = cleaned
+
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +563,8 @@ def _detect_part_blocks(
 
 def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
     """Parse a Rafael RFQ PDF and return globals + per-part delivery list."""
+    global _MISSING_TESS_WARNED
+
     pdf_path = Path(pdf_path)
     with pdfplumber.open(str(pdf_path)) as pdf:
         pages = [_page_clean_words(p) for p in pdf.pages]
@@ -517,9 +573,26 @@ def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
         band = _find_buyer_email_band(pages[0])
         if band is None:
             buyer_name = ""
+            buyer_ocr_status = "email_band_not_found"
+        elif not _tesseract_hebrew_ready():
+            if os.environ.get("RAFAEL_BUYER_OCR", "").strip().lower() not in (
+                "0", "false", "no", "off",
+            ) and not _MISSING_TESS_WARNED:
+                warnings.warn(
+                    "Rafael buyer name empty: install tesseract + heb traineddata "
+                    "and pytesseract (brew install tesseract tesseract-lang). "
+                    "Set RAFAEL_BUYER_OCR=0 to silence.",
+                    stacklevel=2,
+                )
+                _MISSING_TESS_WARNED = True
+            buyer_name = ""
+            buyer_ocr_status = "skipped_no_tesseract"
         else:
             email_top, email_x0, email_x1 = band
-            buyer_name = _ocr_rafael_buyer_name(page0, email_top, email_x0, email_x1)
+            buyer_name = _ocr_rafael_buyer_name(
+                page0, email_top, email_x0, email_x1,
+            )
+            buyer_ocr_status = "ok" if buyer_name.strip() else "ocr_empty"
 
     rfq_number = _detect_rfq_number(pages)
     issue_date = _detect_issue_date(pages)
@@ -530,9 +603,78 @@ def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
     return RafaelRfq(
         rfq_number=rfq_number,
         buyer_name=buyer_name,
+        buyer_ocr_status=buyer_ocr_status,
         submission_date=submission_date,
         parts=parts,
     )
+
+
+def diagnose_rafael_buyer_pdf(pdf_path: str | Path) -> dict[str, Any]:
+    """Return structured buyer-OCR diagnostics for one PDF (support / CLI ``--diagnose``)."""
+    pdf_path = Path(pdf_path)
+    out: dict[str, Any] = {
+        "path": str(pdf_path),
+        "exists": pdf_path.is_file(),
+    }
+    if not pdf_path.is_file():
+        return out
+
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        pages = [_page_clean_words(p) for p in pdf.pages]
+        page0 = pdf.pages[0]
+
+    band = _find_buyer_email_band(pages[0])
+    out["tesseract_ready"] = _tesseract_hebrew_ready()
+    out["email_band"] = list(band) if band else None
+
+    if band:
+        email_top, email_x0, email_x1 = band
+        page_w = float(page0.width)
+        crop_debug: list[dict[str, Any]] = []
+        tess_ok = out["tesseract_ready"]
+        import pytesseract  # noqa: PLC0415
+
+        for dy_top, dy_bottom in _BUYER_OCR_WINDOWS:
+            bbox = _buyer_ocr_crop_bbox(
+                page_w, email_top, email_x0, email_x1, dy_top, dy_bottom,
+            )
+            entry: dict[str, Any] = {
+                "dy_top": dy_top,
+                "dy_bottom": dy_bottom,
+                "bbox": [bbox[0], bbox[1], bbox[2], bbox[3]],
+            }
+            if bbox[1] >= bbox[3] or bbox[0] >= bbox[2]:
+                entry["error"] = "invalid_bbox"
+                crop_debug.append(entry)
+                continue
+            cropped = page0.crop(bbox)
+            img = cropped.to_image(resolution=_BUYER_OCR_DPI).original
+            psm_out: dict[str, Any] = {}
+            if tess_ok:
+                for psm_cfg in _BUYER_OCR_PSM:
+                    try:
+                        raw = pytesseract.image_to_string(
+                            img, lang="heb", config=psm_cfg,
+                        )
+                    except Exception as exc:
+                        psm_out[psm_cfg] = {"error": str(exc)}
+                        continue
+                    prev = raw.replace("\r\n", "\n").strip()
+                    psm_out[psm_cfg] = {
+                        "raw_preview": prev[:240],
+                        "cleaned": _clean_ocr_buyer_text(raw),
+                    }
+            else:
+                psm_out["skipped"] = "no_tesseract_heb"
+            entry["psm"] = psm_out
+            crop_debug.append(entry)
+        out["crops"] = crop_debug
+
+    rfq = parse_rafael_rfq(pdf_path)
+    out["parsed_buyer_name"] = rfq.buyer_name
+    out["parsed_buyer_ocr_status"] = rfq.buyer_ocr_status
+    out["parsed_rfq_number"] = rfq.rfq_number
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -593,16 +735,27 @@ def format_rafael_tsv_body(rows: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import json
     import sys
 
-    if len(sys.argv) < 2:
-        print("Usage: python parse_rafael_rfq.py <rfq.pdf> [<rfq.pdf> ...]")
+    argv = sys.argv[1:]
+    diagnose = bool(argv and argv[0] == "--diagnose")
+    if diagnose:
+        argv = argv[1:]
+
+    if not argv:
+        print(
+            "Usage: python parse_rafael_rfq.py [--diagnose] <rfq.pdf> [<rfq.pdf> ...]",
+        )
         sys.exit(1)
 
-    for arg in sys.argv[1:]:
+    for arg in argv:
         pdf = Path(arg)
         if not pdf.exists():
             print(f"File not found: {pdf}")
+            continue
+        if diagnose:
+            print(json.dumps(diagnose_rafael_buyer_pdf(pdf), ensure_ascii=False, indent=2))
             continue
         rfq = parse_rafael_rfq(pdf)
         rows = flatten_rafael_to_rows(rfq)
@@ -610,7 +763,8 @@ if __name__ == "__main__":
         out_path = pdf.with_name(pdf.stem + ".rafael.txt")
         out_path.write_text(body, encoding="utf-8")
         print(
-            f"{pdf.name}: rfq={rfq.rfq_number} buyer={rfq.buyer_name} "
+            f"{pdf.name}: rfq={rfq.rfq_number} buyer={rfq.buyer_name!r} "
+            f"buyer_ocr_status={rfq.buyer_ocr_status!r} "
             f"sub={rfq.submission_date} parts={len(rfq.parts)} rows={len(rows)} "
-            f"-> {out_path.name}"
+            f"-> {out_path.name}",
         )
