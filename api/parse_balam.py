@@ -147,7 +147,15 @@ _REV_RE = re.compile(r'([A-Za-z0-9\-]+):האצוה')
 _MISSING_REV = 'לא מצוין בבל"מ'
 
 
-def parse_with_regex(text: str) -> PurchaseOrder | None:
+def revision_for_export(revision: str) -> str:
+    """Return empty string for the internal \"missing revision\" sentinel.
+
+    The parser still uses ``_MISSING_REV`` for grouping/inheritance logic; the
+    exported TSV and API rows show a blank cell when the PDF had no הוצאה.
+    """
+    if (revision or "").strip() == _MISSING_REV:
+        return ""
+    return revision
     """Try to parse the BLM using regex only. Returns None if the format
     is unrecognised so the caller can fall back to LLM."""
 
@@ -323,7 +331,7 @@ def export_to_txt(order: PurchaseOrder, output_path: str | Path) -> Path:
         {
             "מקט ספק": item.supplier_sku,
             "כמות נדרשת": item.required_quantity,
-            "הוצאה": item.revision,
+            "הוצאה": revision_for_export(item.revision),
         }
         for item in order.line_items
     ]

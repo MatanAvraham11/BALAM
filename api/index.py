@@ -42,6 +42,7 @@ from parse_balam import (
     extract_text_from_pdf,
     format_balam_tsv_body,
     parse_balam_text,
+    revision_for_export,
 )
 from fai_parser import items_to_csv, run_fai
 from parse_rafael_rfq import (
@@ -246,7 +247,7 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
             {
                 "מקט ספק": item.supplier_sku,
                 "כמות נדרשת": item.required_quantity,
-                "הוצאה": item.revision,
+                "הוצאה": revision_for_export(item.revision),
             }
             for item in order.line_items
         ]
