@@ -16,7 +16,11 @@ try:
 except ModuleNotFoundError:
     pass
 
-from parse_balam import _MISSING_REV, revision_for_export  # noqa: E402
+from parse_balam import (  # noqa: E402
+    _MISSING_REV,
+    parse_with_regex,
+    revision_for_export,
+)
 
 
 class RevisionExportTests(unittest.TestCase):
@@ -27,6 +31,9 @@ class RevisionExportTests(unittest.TestCase):
     def test_real_revision_unchanged(self):
         self.assertEqual(revision_for_export("A"), "A")
         self.assertEqual(revision_for_export("-"), "-")
+
+    def test_parse_with_regex_is_defined(self):
+        self.assertTrue(callable(parse_with_regex))
 
 
 if __name__ == "__main__":

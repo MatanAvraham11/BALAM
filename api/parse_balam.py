@@ -156,6 +156,9 @@ def revision_for_export(revision: str) -> str:
     if (revision or "").strip() == _MISSING_REV:
         return ""
     return revision
+
+
+def parse_with_regex(text: str) -> PurchaseOrder | None:
     """Try to parse the BLM using regex only. Returns None if the format
     is unrecognised so the caller can fall back to LLM."""
 
