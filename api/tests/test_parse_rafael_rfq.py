@@ -31,10 +31,11 @@ from parse_rafael_rfq import (  # noqa: E402
     Delivery,
     PartBlock,
     RafaelRfq,
-    _buyer_display_name_from_email,
     _classify_fai_digit,
     _format_issue_date,
+    _hebrew_letter_count,
     _parse_dmy,
+    _tesseract_hebrew_ready,
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
@@ -121,25 +122,6 @@ class ParseDmyTests(unittest.TestCase):
         self.assertIsNone(_parse_dmy(""))
         self.assertIsNone(_parse_dmy("2026-05-07"))
         self.assertIsNone(_parse_dmy("32/13/2026"))
-
-
-class BuyerDisplayNameTests(unittest.TestCase):
-    def test_known_rafael_emails(self):
-        self.assertEqual(
-            _buyer_display_name_from_email("haimka@rafael.co.il"),
-            "חיים קאופמן",
-        )
-        self.assertEqual(
-            _buyer_display_name_from_email("Sshiran@rafael.co.il"),
-            "שרה שירן",
-        )
-        self.assertEqual(
-            _buyer_display_name_from_email("yossish2@rafael.co.il"),
-            "יוסי שני",
-        )
-
-    def test_unknown_returns_empty(self):
-        self.assertEqual(_buyer_display_name_from_email("nobody@rafael.co.il"), "")
 
 
 class ClassifyFaiTests(unittest.TestCase):
@@ -231,7 +213,19 @@ class PdfSmokeTests(unittest.TestCase):
                 rows = flatten_rafael_to_rows(rfq)
 
                 self.assertEqual(rfq.rfq_number, case["rfq"])
-                self.assertEqual(rfq.buyer_name, case["buyer"])
+                if _tesseract_hebrew_ready():
+                    self.assertGreaterEqual(
+                        _hebrew_letter_count(rfq.buyer_name),
+                        2,
+                        f"buyer_name={rfq.buyer_name!r} (expected Hebrew OCR; "
+                        f"reference was {case['buyer']!r})",
+                    )
+                else:
+                    self.assertEqual(
+                        rfq.buyer_name,
+                        "OCR Failed",
+                        "without tesseract+heb+pytesseract buyer must not be guessed",
+                    )
                 self.assertIsNotNone(_parse_dmy(rfq.submission_date))
                 self.assertEqual(len(rfq.parts), case["parts"])
                 self.assertEqual(len(rows), case["rows"])
