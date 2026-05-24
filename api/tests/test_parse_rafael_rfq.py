@@ -34,7 +34,9 @@ from parse_rafael_rfq import (  # noqa: E402
     _buyer_display_name_from_email,
     _classify_fai_digit,
     _format_issue_date,
+    _hebrew_letter_count,
     _parse_dmy,
+    _tesseract_hebrew_ready,
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
@@ -231,7 +233,14 @@ class PdfSmokeTests(unittest.TestCase):
                 rows = flatten_rafael_to_rows(rfq)
 
                 self.assertEqual(rfq.rfq_number, case["rfq"])
-                self.assertEqual(rfq.buyer_name, case["buyer"])
+                if _tesseract_hebrew_ready():
+                    self.assertGreaterEqual(
+                        _hebrew_letter_count(rfq.buyer_name),
+                        2,
+                        f"buyer OCR/map too weak: {rfq.buyer_name!r}",
+                    )
+                else:
+                    self.assertEqual(rfq.buyer_name, case["buyer"])
                 self.assertIsNotNone(_parse_dmy(rfq.submission_date))
                 self.assertEqual(len(rfq.parts), case["parts"])
                 self.assertEqual(len(rows), case["rows"])

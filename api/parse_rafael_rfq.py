@@ -1,5 +1,5 @@
 """
-Rafael BOM (RFQ) parser — V.5.1.
+Rafael BOM (RFQ) parser — V.5.6.
 
 Rafael RFQ PDFs are landscape A4 with a custom subset font whose CMap is
 broken for the Hebrew labels (every Hebrew glyph extracts as a
@@ -11,7 +11,13 @@ everything we need:
 Globals (page-header band, y ≲ 140 pt)
     * RFQ number      — sz=10, x≈133–163, y≈55      (also in ``FAX_INFO:…``)
     * Issue date      — sz=8,  x≈251–295, y≈85
-    * Buyer email     — sz=9,  x≈100–180, y≈100     (used only to map → Hebrew name)
+    * Buyer name      — **V.5.6:** local OCR (``pytesseract`` + ``heb``) on a
+      **PyMuPDF** pixmap of a tight crop **above** the Rafael e-mail anchor
+      found by pdfplumber. Falls back to the legacy e-mail → Hebrew map when
+      Tesseract is missing or OCR is weak. Set ``RAFAEL_BUYER_OCR=0`` to skip OCR
+      (map only). Requires system ``tesseract`` + Hebrew traineddata (e.g.
+      ``brew install tesseract tesseract-lang``).
+    * Buyer email     — sz=9,  x≈100–180, y≈100     (geometry anchor for OCR crop)
     * Buyer phone     — sz=9,  x≈130–180, y≈88
     * Submission date — first ``dd/mm/yyyy`` found in ``extract_text()`` in page order
       (cover-letter paragraph; many RFQs omit it from the text layer — then issue date)
@@ -33,12 +39,18 @@ then globals + locals (``\u05d6\u05de\u05df \u05d0\u05e1\u05e4\u05e7\u05d4 \u05d
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import warnings
 from datetime import date, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import fitz  # PyMuPDF
 import pdfplumber
+from PIL import Image
 from pydantic import BaseModel, Field
 
 
@@ -82,7 +94,16 @@ _RFQ_Y = (50.0, 62.0)
 _ISSUE_DATE_X = (245.0, 305.0)
 _ISSUE_DATE_Y = (80.0, 90.0)
 _EMAIL_X_MAX = 200.0
-_EMAIL_Y = (95.0, 105.0)
+_EMAIL_Y = (86.0, 112.0)
+
+# Buyer-name OCR (PyMuPDF clip → pixmap → Tesseract ``heb``)
+_BUYER_OCR_DPI = 300
+_BUYER_OCR_PAD_X = 8.0
+# Vertical span (pdfplumber ``top`` grows downward): from ``email_top - dy_top``
+# to just above the e-mail (captures ~2 text lines: קניין + טלפון).
+_BUYER_OCR_DY_TOP = 46.0
+_BUYER_OCR_GAP_ABOVE_EMAIL = 2.0
+_MISSING_TESS_WARNED = False
 
 # Per-row column x-bands
 _QTY_X = (255.0, 295.0)
@@ -204,6 +225,189 @@ def _buyer_display_name_from_email(email: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# V.5.6 — Buyer name via PyMuPDF crop + Tesseract Hebrew OCR
+# ---------------------------------------------------------------------------
+
+
+def _hebrew_letter_count(s: str) -> int:
+    return sum(1 for c in s if "\u0590" <= c <= "\u05FF")
+
+
+@lru_cache(maxsize=1)
+def _tesseract_hebrew_ready() -> bool:
+    """True when ``tesseract`` is on PATH, ``pytesseract`` importable, and ``heb`` exists."""
+    if os.environ.get("RAFAEL_BUYER_OCR", "").strip().lower() in (
+        "0", "false", "no", "off",
+    ):
+        return False
+    if not shutil.which("tesseract"):
+        return False
+    try:
+        import pytesseract  # noqa: PLC0415, F401
+    except ModuleNotFoundError:
+        return False
+    try:
+        import pytesseract as pt  # noqa: PLC0415
+
+        langs = pt.get_languages(config="")
+    except Exception:
+        return False
+    return "heb" in langs
+
+
+def _find_buyer_email_word(
+    words: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """First Rafael e-mail word in the header band (pdfplumber clean words)."""
+    strict = [
+        w for w in words
+        if _in_x(w, 0.0, _EMAIL_X_MAX)
+        and _EMAIL_Y[0] <= w["top"] <= _EMAIL_Y[1]
+        and "@rafael.co.il" in (w.get("text") or "").lower()
+    ]
+    pool = strict if strict else [
+        w for w in words
+        if _in_x(w, 0.0, _EMAIL_X_MAX)
+        and 55.0 <= w["top"] <= _HEADER_Y_MAX
+        and "@rafael.co.il" in (w.get("text") or "").lower()
+    ]
+    if not pool:
+        return None
+    centre = (_EMAIL_Y[0] + _EMAIL_Y[1]) / 2.0
+    return min(pool, key=lambda w: abs(float(w["top"]) - centre))
+
+
+def _strip_kinyan_noise(line: str) -> str:
+    s = re.sub(
+        r"^[:\s\u05f3\u05f4]*קניין[:\s\u05f3\u05f4]*",
+        "",
+        line.strip(),
+    )
+    s = re.sub(
+        r"^[:\s\u05f3\u05f4]*קנין[:\s\u05f3\u05f4]*",
+        "",
+        s,
+    )
+    return s.lstrip(": \u05f3\u05f4").strip()
+
+
+def _hebrew_only_spaced(s: str) -> str:
+    kept: list[str] = []
+    for ch in s:
+        if "\u0590" <= ch <= "\u05FF":
+            kept.append(ch)
+        elif ch.isspace():
+            kept.append(" ")
+    return re.sub(r"\s+", " ", "".join(kept)).strip()
+
+
+def _best_hebrew_line_orientation(line: str) -> str:
+    """Pick forward vs reversed string by Hebrew letter count (Tesseract RTL quirks)."""
+    line = line.strip()
+    if not line:
+        return ""
+    a = _hebrew_only_spaced(_strip_kinyan_noise(line))
+    b = _hebrew_only_spaced(_strip_kinyan_noise(line[::-1]))
+    if _hebrew_letter_count(b) > _hebrew_letter_count(a):
+        return b
+    return a
+
+
+def _clean_ocr_buyer_output(raw: str) -> str:
+    """Strip noise; prefer the line with the most Hebrew letters."""
+    if not raw or not raw.strip():
+        return ""
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    best = ""
+    best_score = (-1, -1)
+    for ln in lines:
+        oriented = _best_hebrew_line_orientation(ln)
+        if _hebrew_letter_count(oriented) < 2:
+            continue
+        key = (_hebrew_letter_count(oriented), len(oriented))
+        if key > best_score:
+            best_score = key
+            best = oriented
+    return best
+
+
+def _buyer_name_from_ocr_pymupdf_tesseract(
+    pdf_path: Path,
+    email_w: dict[str, Any],
+) -> str:
+    """Render a high-DPI pixmap clip (fitz) above the e-mail and OCR with Tesseract ``heb``."""
+    global _MISSING_TESS_WARNED
+
+    if not _tesseract_hebrew_ready():
+        if os.environ.get("RAFAEL_BUYER_OCR", "").strip().lower() not in (
+            "0", "false", "no", "off",
+        ) and not _MISSING_TESS_WARNED:
+            warnings.warn(
+                "Rafael buyer OCR skipped: install tesseract + heb + pytesseract "
+                "(brew install tesseract tesseract-lang). "
+                "Set RAFAEL_BUYER_OCR=0 to silence.",
+                stacklevel=2,
+            )
+            _MISSING_TESS_WARNED = True
+        return ""
+
+    import pytesseract  # noqa: PLC0415
+
+    x0 = float(email_w["x0"])
+    x1 = float(email_w["x1"])
+    etop = float(email_w["top"])
+    clip_x0 = max(0.0, x0 - _BUYER_OCR_PAD_X)
+    clip_x1 = x1 + _BUYER_OCR_PAD_X
+    clip_y0 = etop - _BUYER_OCR_DY_TOP
+    clip_y1 = etop - _BUYER_OCR_GAP_ABOVE_EMAIL
+
+    rect = fitz.Rect(clip_x0, clip_y0, clip_x1, clip_y1)
+    if rect.is_empty or rect.width <= 0 or rect.height <= 0:
+        return ""
+
+    doc = fitz.open(pdf_path)
+    try:
+        page = doc[0]
+        clip = rect & page.rect
+        if clip.is_empty:
+            return ""
+        zoom = _BUYER_OCR_DPI / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
+    finally:
+        doc.close()
+
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    try:
+        raw = pytesseract.image_to_string(
+            img,
+            lang="heb",
+            config="--psm 6 -c preserve_interword_spaces=1",
+        )
+    except Exception:
+        return ""
+    return _clean_ocr_buyer_output(raw)
+
+
+def _detect_buyer(pdf_path: Path, pages: list[list[dict[str, Any]]]) -> str:
+    """Buyer Hebrew name: OCR crop above e-mail (V.5.6), else legacy e-mail map."""
+    email_w = _find_buyer_email_word(pages[0])
+    if email_w is None:
+        return ""
+
+    ocr_name = _buyer_name_from_ocr_pymupdf_tesseract(pdf_path, email_w)
+    if _hebrew_letter_count(ocr_name) >= 2:
+        return ocr_name
+
+    mapped = _buyer_display_name_from_email(email_w["text"])
+    if mapped:
+        return mapped
+    return _email_local_part(email_w["text"]) or ""
+
+
+# ---------------------------------------------------------------------------
 # Globals detection
 # ---------------------------------------------------------------------------
 
@@ -236,25 +440,6 @@ def _detect_issue_date(pages: list[list[dict[str, Any]]]) -> str:
             formatted = _format_issue_date(w["text"])
             if formatted:
                 return formatted
-    return ""
-
-
-def _detect_buyer(pages: list[list[dict[str, Any]]]) -> str:
-    """Buyer Hebrew name: map from the Rafael e-mail in the header block.
-
-    The visual ``קניין: <שם>`` text is not available as Unicode in these PDFs
-    (subset-font / CMap), so we use the stable e-mail on the same header row.
-    """
-    for words in pages:
-        for w in words:
-            if not (_in_x(w, 0.0, _EMAIL_X_MAX)
-                    and _EMAIL_Y[0] <= w["top"] <= _EMAIL_Y[1]):
-                continue
-            if "@rafael.co.il" in w["text"].lower():
-                name = _buyer_display_name_from_email(w["text"])
-                if name:
-                    return name
-                return _email_local_part(w["text"]) or ""
     return ""
 
 
@@ -400,7 +585,7 @@ def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
 
     rfq_number = _detect_rfq_number(pages)
     issue_date = _detect_issue_date(pages)
-    buyer_name = _detect_buyer(pages)
+    buyer_name = _detect_buyer(pdf_path, pages)
     submission_date = _detect_submission_date(extract_text_pages, issue_date)
 
     parts = _detect_part_blocks(pages)
@@ -414,7 +599,7 @@ def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
 
 
 # ---------------------------------------------------------------------------
-# Row flattening + TSV writer (V.5.1 spec)
+# Row flattening + TSV writer (V.5.6 spec)
 # ---------------------------------------------------------------------------
 
 RAFAEL_TXT_COLUMNS: list[str] = [
