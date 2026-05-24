@@ -120,6 +120,24 @@ class BuyerOcrLabelCleanTests(unittest.TestCase):
     def test_does_not_strip_real_name(self):
         self.assertEqual(_buyer_ocr_label_clean("חיים קאופמן"), "חיים קאופמן")
 
+    def test_strips_single_letter_prefix(self):
+        # OCR bleed from the adjacent "תאריך" cell (final "ך" leaks into the crop).
+        self.assertEqual(_buyer_ocr_label_clean("ך חיים קאופמן"), "חיים קאופמן")
+
+    def test_strips_single_letter_he_prefix(self):
+        # Stray "ה" leaked from header text — must not become part of the name.
+        self.assertEqual(
+            _buyer_ocr_label_clean("ה שירן סורני שלאם"), "שירן סורני שלאם"
+        )
+
+    def test_strips_single_letter_suffix(self):
+        self.assertEqual(_buyer_ocr_label_clean("דוד כהן ך"), "דוד כהן")
+
+    def test_keeps_two_letter_name_components(self):
+        # Real 2-letter Hebrew components like בן/בר/אל must NOT be stripped.
+        self.assertEqual(_buyer_ocr_label_clean("בן דוד"), "בן דוד")
+        self.assertEqual(_buyer_ocr_label_clean("דוד בר אל"), "דוד בר אל")
+
 
 class FormatIssueDateTests(unittest.TestCase):
     def test_unicode_minus(self):

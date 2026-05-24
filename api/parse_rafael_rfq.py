@@ -114,9 +114,9 @@ _EMAIL_Y = (86.0, 112.0)
 # just past the e-mail x1 so the "תאריך הדפסה:" cell to the right is excluded.
 # Vertically: DELTA_TOP/DELTA_BOTTOM frame the single buyer row above the e-mail.
 _BUYER_CROP_PAD_X0_LEFT = 12.0
-_BUYER_CROP_X1_PAD_RIGHT = 60.0
-_BUYER_CROP_DELTA_TOP = 28.0
-_BUYER_CROP_DELTA_BOTTOM = 13.0
+_BUYER_CROP_X1_PAD_RIGHT = 40.0  # narrower to avoid bleeding the "תאריך הדפסה" cell
+_BUYER_CROP_DELTA_TOP = 26.0
+_BUYER_CROP_DELTA_BOTTOM = 14.0
 _BUYER_OCR_DPI = 300.0
 
 # Per-row column x-bands
@@ -341,6 +341,22 @@ def _strip_leading_buyer_label_words(hebrew_line: str) -> str:
     return " ".join(parts).strip()
 
 
+def _strip_short_edge_tokens(hebrew_line: str) -> str:
+    """Drop single-letter Hebrew "words" at the start/end of the buyer line.
+
+    Real Hebrew names always have ≥2 letters per component (e.g. ``בן``, ``בר``,
+    ``אל``); standalone one-letter tokens are almost always OCR bleed from the
+    adjacent ``תאריך הדפסה`` cell or border noise (e.g. final ``ך`` from ``תאריך``,
+    stray ``ה`` from ``הדפסה``). Stripping only one-letter words is safe.
+    """
+    parts = hebrew_line.split()
+    while parts and len(parts[0]) == 1:
+        parts.pop(0)
+    while parts and len(parts[-1]) == 1:
+        parts.pop()
+    return " ".join(parts).strip()
+
+
 def _buyer_ocr_label_clean(raw: str) -> str:
     """Strip label / separators / header phrases / digits; keep best Hebrew run.
 
@@ -362,6 +378,7 @@ def _buyer_ocr_label_clean(raw: str) -> str:
         return s
     best = max(runs, key=lambda t: (_hebrew_letter_count(t), len(t)))
     best = _strip_leading_buyer_label_words(best)
+    best = _strip_short_edge_tokens(best)
     return best.strip()
 
 
