@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""V.5.7 visual crop probe: save the buyer-name region above the Rafael e-mail anchor.
+"""V.5.7 wide buyer-line crop + OCR debug (bulletproof band above e-mail).
 
-Uses pdfplumber on page 1 to locate a word ending with ``@rafael.co.il``, applies the
-fixed V.5.7 crop geometry in PDF user space, renders that rectangle at 300 DPI with
-PyMuPDF (fitz), and writes ``debug_crop.png`` at the repository root. Does not run
-Tesseract.
+Wide box: ``anchor_x0−20 … anchor_x1+150``, ``anchor_top−45 … anchor_top−15`` at **300 DPI**,
+saved as ``debug_crop.png`` (RGB). Tesseract ``heb`` ``--psm 7`` runs on a **grayscale**
+copy of the crop (same as ``parse_rafael_rfq``); strict Python
+cleaning removes ``קניין``, colons, ASCII hyphens, and newlines.
 
 Usage::
 
@@ -13,11 +13,13 @@ Usage::
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
 import fitz  # PyMuPDF
 import pdfplumber
+from PIL import Image
 
 _API = Path(__file__).resolve().parent
 _REPO_ROOT = _API.parent
@@ -25,18 +27,16 @@ if str(_API) not in sys.path:
     sys.path.insert(0, str(_API))
 
 from parse_rafael_rfq import (  # noqa: E402
+    _BUYER_CROP_DELTA_BOTTOM,
+    _BUYER_CROP_DELTA_TOP,
+    _BUYER_CROP_PAD_X0_LEFT,
+    _BUYER_CROP_X1_PAD_RIGHT,
+    _BUYER_OCR_DPI,
     _find_buyer_email_word,
     _page_clean_words,
 )
 
 _OUT_PATH = _REPO_ROOT / "debug_crop.png"
-
-# V.5.7 geometry (must match ``parse_rafael_rfq._buyer_name_from_ocr_pymupdf_tesseract``).
-_CROP_TOP_DELTA = 45.0
-_CROP_BOTTOM_DELTA = 5.0
-_CROP_X0_PAD = 10.0
-_CROP_X1_PAD = 100.0
-_RENDER_DPI = 300.0
 
 
 def main() -> int:
@@ -62,13 +62,13 @@ def main() -> int:
         )
         return 1
 
-    x0 = float(anchor["x0"])
-    x1 = float(anchor["x1"])
+    ax0 = float(anchor["x0"])
+    ax1 = float(anchor["x1"])
     top = float(anchor["top"])
-    crop_x0 = max(0.0, x0 - _CROP_X0_PAD)
-    crop_x1 = x1 + _CROP_X1_PAD
-    crop_top = top - _CROP_TOP_DELTA
-    crop_bottom = top - _CROP_BOTTOM_DELTA
+    crop_x0 = max(0.0, ax0 - _BUYER_CROP_PAD_X0_LEFT)
+    crop_x1 = ax1 + _BUYER_CROP_X1_PAD_RIGHT
+    crop_top = top - _BUYER_CROP_DELTA_TOP
+    crop_bottom = top - _BUYER_CROP_DELTA_BOTTOM
 
     rect = fitz.Rect(crop_x0, crop_top, crop_x1, crop_bottom)
     doc = fitz.open(pdf_path)
@@ -78,19 +78,48 @@ def main() -> int:
         if clip.is_empty or clip.width <= 0 or clip.height <= 0:
             print(f"Empty clip after intersecting page: {rect!r}", file=sys.stderr)
             return 1
-        zoom = _RENDER_DPI / 72.0
+        zoom = _BUYER_OCR_DPI / 72.0
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
     finally:
         doc.close()
 
-    pix.save(_OUT_PATH.as_posix())
+    img_rgb = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    img_rgb.save(_OUT_PATH.as_posix())
+    img = img_rgb.convert("L")
+
     print(
-        f"Anchor {anchor.get('text')!r} @ x0={x0:.1f} x1={x1:.1f} top={top:.1f}\n"
-        f"Crop rect PDF pt: ({crop_x0:.1f}, {crop_top:.1f}) – ({crop_x1:.1f}, {crop_bottom:.1f})\n"
-        f"Pixmap: {pix.width}×{pix.height} px @ {_RENDER_DPI:.0f} DPI\n"
-        f"Wrote {_OUT_PATH}",
+        f"Crop (pt): x0={crop_x0:.3f} y0={crop_top:.3f} x1={crop_x1:.3f} y1={crop_bottom:.3f}  "
+        f"→ {pix.width}×{pix.height}px @ {_BUYER_OCR_DPI:.0f} DPI → {_OUT_PATH}",
     )
+
+    if not shutil.which("tesseract"):
+        print("SKIP OCR: tesseract not on PATH", file=sys.stderr)
+        return 0
+    try:
+        import pytesseract  # noqa: PLC0415
+    except ModuleNotFoundError:
+        print("SKIP OCR: pytesseract not installed", file=sys.stderr)
+        return 0
+    if "heb" not in pytesseract.get_languages(config=""):
+        print("SKIP OCR: tesseract lacks heb", file=sys.stderr)
+        return 0
+
+    raw_ocr = pytesseract.image_to_string(
+        img,
+        lang="heb",
+        config="--psm 7",
+    )
+    clean_name = (
+        raw_ocr.replace("קניין", "")
+        .replace(":", "")
+        .replace("-", "")
+        .replace("\n", "")
+        .strip()
+    )
+
+    print(f"RAW OCR: {repr(raw_ocr)}")
+    print(f"CLEAN NAME: '{clean_name}'")
     return 0
 
 

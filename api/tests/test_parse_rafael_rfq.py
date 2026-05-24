@@ -233,6 +233,8 @@ class PdfSmokeTests(unittest.TestCase):
                 for r in rows:
                     for col in RAFAEL_TXT_COLUMNS:
                         val = r.get(col, "")
+                        if col == "שם קניין" and val == "":
+                            continue
                         self.assertNotIn(
                             val,
                             ("", None),

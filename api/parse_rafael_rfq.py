@@ -12,13 +12,17 @@ Globals (page-header band, y ≲ 140 pt)
     * RFQ number      — sz=10, x≈133–163, y≈55      (also in ``FAX_INFO:…``)
     * Issue date      — sz=8,  x≈251–295, y≈85
     * Buyer name      — **V.5.7:** deterministic OCR only: pdfplumber finds the
-      ``…@rafael.co.il`` anchor on page 1; **PyMuPDF** renders a **300 DPI** clip
-      with fixed geometry above the e-mail; **Tesseract** ``heb`` reads the crop.
+      ``…@rafael.co.il`` anchor on page 1; **PyMuPDF** renders a **300 DPI** **wide**
+      clip (``x0−20 … x1+150``, ``top−45 … top−15``) above the e-mail; **Tesseract**
+      ``heb`` on a **grayscale** PIL image (**PSM 7**, then **PSM 6** if the cleaned
+      PSM 7 text has fewer than two Hebrew letters). Label noise is removed with
+      deterministic ``replace`` on ``קניין``, ``:``, ``-``, newlines (same as
+      ``api/test_ocr_crop.py``). ``_hebrew_letter_count`` (U+05D0–U+05EA) must be ≥2
+      or the buyer field is left empty (no e-mail map).
       There is **no** hardcoded buyer dictionary and **no** e-mail local-part
       fallback. If the anchor, Tesseract stack, or OCR output is unusable
-      (fewer than two Hebrew letters), the parser emits ``""`` or ``"OCR Failed"``
-      and **warnings** — never a guessed name. Set ``RAFAEL_BUYER_OCR=0`` to
-      disable OCR locally (still returns ``"OCR Failed"`` with a warning).
+      (fewer than two Hebrew letters after cleaning), the buyer field is ``""``.
+      Set ``RAFAEL_BUYER_OCR=0`` to disable OCR locally (still returns ``"OCR Failed"`` with a warning).
     * Buyer email     — sz=9,  x≈100–180, y≈100     (geometry anchor for OCR crop)
     * Buyer phone     — sz=9,  x≈130–180, y≈88
     * Submission date — first ``dd/mm/yyyy`` found in ``extract_text()`` in page order
@@ -98,11 +102,11 @@ _ISSUE_DATE_Y = (80.0, 90.0)
 _EMAIL_X_MAX = 200.0
 _EMAIL_Y = (86.0, 112.0)
 
-# V.5.7 buyer-name OCR crop (PDF user space, pt): tight band above e-mail anchor.
-_BUYER_CROP_ANCHOR_DELTA_TOP = 45.0
-_BUYER_CROP_ANCHOR_DELTA_BOTTOM = 5.0
-_BUYER_CROP_PAD_X0 = 10.0
-_BUYER_CROP_PAD_X1 = 100.0
+# V.5.7 buyer-name OCR: wide band above e-mail anchor (full buyer line, no clipped ascenders).
+_BUYER_CROP_PAD_X0_LEFT = 20.0
+_BUYER_CROP_X1_PAD_RIGHT = 150.0
+_BUYER_CROP_DELTA_TOP = 45.0
+_BUYER_CROP_DELTA_BOTTOM = 15.0
 _BUYER_OCR_DPI = 300.0
 
 # Per-row column x-bands
@@ -140,6 +144,11 @@ _MONTHS = {
 
 # Keep only words whose text is printable ASCII + Unicode minus
 _ASCII_OK = re.compile(r"^[\u0020-\u007E\u2212]+$")
+
+
+def _hebrew_letter_count(text: str) -> int:
+    """Count characters in the Hebrew letter range U+05D0–U+05EA (Aleph–Tav)."""
+    return sum(1 for c in text if "\u05d0" <= c <= "\u05ea")
 
 
 # ---------------------------------------------------------------------------
@@ -206,10 +215,6 @@ def _parse_dmy(token: str) -> date | None:
 # ---------------------------------------------------------------------------
 
 
-def _hebrew_letter_count(s: str) -> int:
-    return sum(1 for c in s if "\u0590" <= c <= "\u05FF")
-
-
 @lru_cache(maxsize=1)
 def _tesseract_hebrew_ready() -> bool:
     """True when ``tesseract`` is on PATH, ``pytesseract`` importable, and ``heb`` exists."""
@@ -250,76 +255,20 @@ def _find_buyer_email_word(
     return min(pool, key=lambda w: abs(float(w["top"]) - centre))
 
 
-def _strip_kinyan_noise(line: str) -> str:
-    s = re.sub(
-        r"^[:\s\u05f3\u05f4]*קניין[:\s\u05f3\u05f4]*",
-        "",
-        line.strip(),
-    )
-    s = re.sub(
-        r"^[:\s\u05f3\u05f4]*קנין[:\s\u05f3\u05f4]*",
-        "",
-        s,
-    )
-    return s.lstrip(": \u05f3\u05f4").strip()
-
-
-def _hebrew_only_spaced(s: str) -> str:
-    kept: list[str] = []
-    for ch in s:
-        if "\u0590" <= ch <= "\u05FF":
-            kept.append(ch)
-        elif ch.isspace():
-            kept.append(" ")
-    return re.sub(r"\s+", " ", "".join(kept)).strip()
-
-
-def _best_hebrew_line_orientation(line: str) -> str:
-    """Pick forward vs reversed string by Hebrew letter count (Tesseract RTL quirks)."""
-    line = line.strip()
-    if not line:
-        return ""
-    a = _hebrew_only_spaced(_strip_kinyan_noise(line))
-    b = _hebrew_only_spaced(_strip_kinyan_noise(line[::-1]))
-    if _hebrew_letter_count(b) > _hebrew_letter_count(a):
-        return b
-    return a
-
-
-def _clean_ocr_buyer_output(raw: str) -> str:
-    """Strip noise; prefer the line with the most Hebrew letters."""
-    if not raw or not raw.strip():
-        return ""
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    if not lines:
-        return ""
-    best = ""
-    best_score = (-1, -1)
-    for ln in lines:
-        oriented = _best_hebrew_line_orientation(ln)
-        if _hebrew_letter_count(oriented) < 2:
-            continue
-        key = (_hebrew_letter_count(oriented), len(oriented))
-        if key > best_score:
-            best_score = key
-            best = oriented
-    return best
-
-
 def _buyer_name_from_ocr_pymupdf_tesseract(
     pdf_path: Path,
     email_w: dict[str, Any],
 ) -> str:
-    """V.5.7 fixed crop above e-mail → 300 DPI pixmap (fitz) → Tesseract ``heb``."""
+    """V.5.7 wide crop → 300 DPI pixmap → grayscale → Tesseract ``heb`` PSM 7 (+6 if weak)."""
     import pytesseract  # noqa: PLC0415
 
     x0 = float(email_w["x0"])
     x1 = float(email_w["x1"])
     etop = float(email_w["top"])
-    clip_x0 = max(0.0, x0 - _BUYER_CROP_PAD_X0)
-    clip_x1 = x1 + _BUYER_CROP_PAD_X1
-    clip_y0 = etop - _BUYER_CROP_ANCHOR_DELTA_TOP
-    clip_y1 = etop - _BUYER_CROP_ANCHOR_DELTA_BOTTOM
+    clip_x0 = max(0.0, x0 - _BUYER_CROP_PAD_X0_LEFT)
+    clip_x1 = x1 + _BUYER_CROP_X1_PAD_RIGHT
+    clip_y0 = etop - _BUYER_CROP_DELTA_TOP
+    clip_y1 = etop - _BUYER_CROP_DELTA_BOTTOM
 
     rect = fitz.Rect(clip_x0, clip_y0, clip_x1, clip_y1)
     if rect.is_empty or rect.width <= 0 or rect.height <= 0:
@@ -337,16 +286,38 @@ def _buyer_name_from_ocr_pymupdf_tesseract(
     finally:
         doc.close()
 
-    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
+
+    def _label_clean(raw: str) -> str:
+        return (
+            (raw or "")
+            .replace("קניין", "")
+            .replace(":", "")
+            .replace("-", "")
+            .replace("\n", "")
+            .strip()
+        )
+
     try:
-        raw = pytesseract.image_to_string(
+        raw7 = pytesseract.image_to_string(
+            img,
+            lang="heb",
+            config="--psm 7",
+        )
+        clean7 = _label_clean(raw7)
+        if _hebrew_letter_count(clean7) >= 2:
+            return clean7
+        raw6 = pytesseract.image_to_string(
             img,
             lang="heb",
             config="--psm 6 -c preserve_interword_spaces=1",
         )
+        clean6 = _label_clean(raw6)
+        if _hebrew_letter_count(clean6) > _hebrew_letter_count(clean7):
+            return clean6
+        return clean7
     except Exception:
         return ""
-    return _clean_ocr_buyer_output(raw)
 
 
 def _detect_buyer(pdf_path: Path, pages: list[list[dict[str, Any]]]) -> str:
@@ -374,15 +345,16 @@ def _detect_buyer(pdf_path: Path, pages: list[list[dict[str, Any]]]) -> str:
             stacklevel=2,
         )
         return "OCR Failed"
-    name = _buyer_name_from_ocr_pymupdf_tesseract(pdf_path, email_w)
-    if _hebrew_letter_count(name) >= 2:
-        return name
-    warnings.warn(
-        f"Rafael buyer OCR: insufficient Hebrew in OCR output ({name!r}).",
-        UserWarning,
-        stacklevel=2,
-    )
-    return "OCR Failed"
+    clean_name = _buyer_name_from_ocr_pymupdf_tesseract(pdf_path, email_w)
+    if _hebrew_letter_count(clean_name) >= 2:
+        return clean_name
+    if clean_name:
+        warnings.warn(
+            f"Rafael buyer OCR: insufficient Hebrew letters in cleaned output ({clean_name!r}).",
+            UserWarning,
+            stacklevel=2,
+        )
+    return ""
 
 
 # ---------------------------------------------------------------------------
