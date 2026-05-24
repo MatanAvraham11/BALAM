@@ -243,10 +243,6 @@ def _tesseract_hebrew_ready() -> bool:
     if not shutil.which("tesseract"):
         return False
     try:
-        import pytesseract  # noqa: PLC0415, F401
-    except ModuleNotFoundError:
-        return False
-    try:
         import pytesseract as pt  # noqa: PLC0415
 
         langs = pt.get_languages(config="")
