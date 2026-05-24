@@ -215,6 +215,34 @@ def _parse_dmy(token: str) -> date | None:
 # V.5.7 — Buyer name: PyMuPDF geometric crop + Tesseract Hebrew (OCR-only)
 # ---------------------------------------------------------------------------
 
+_TESSERACT_CMD_ENVS = ("TESSERACT_CMD", "RAFAEL_TESSERACT_CMD")
+# When ``shutil.which("tesseract")`` fails (narrow PATH in IDEs, some PaaS), still
+# find common Homebrew / Linux installs so OCR works if the binary exists.
+_TESSERACT_FALLBACK_PATHS = (
+    "/opt/homebrew/bin/tesseract",
+    "/usr/local/bin/tesseract",
+    "/usr/bin/tesseract",
+)
+
+
+def _resolved_tesseract_executable() -> str | None:
+    """Return an absolute path to ``tesseract``, or ``None`` if not found."""
+    for key in _TESSERACT_CMD_ENVS:
+        raw = (os.environ.get(key) or "").strip()
+        if not raw:
+            continue
+        p = Path(raw).expanduser()
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p.resolve())
+    w = shutil.which("tesseract")
+    if w:
+        return w
+    for cand in _TESSERACT_FALLBACK_PATHS:
+        p = Path(cand)
+        if p.is_file() and os.access(p, os.X_OK):
+            return str(p.resolve())
+    return None
+
 
 def _tesseract_probe() -> tuple[bool, str | None]:
     """Return ``(ready, reason_code)`` for Tesseract + Hebrew OCR (V.5.7 buyer).
@@ -225,11 +253,13 @@ def _tesseract_probe() -> tuple[bool, str | None]:
         "0", "false", "no", "off",
     ):
         return False, "rafael_buyer_ocr_disabled"
-    if not shutil.which("tesseract"):
+    exe = _resolved_tesseract_executable()
+    if not exe:
         return False, "tesseract_not_on_path"
     try:
         import pytesseract as pt  # noqa: PLC0415
 
+        pt.pytesseract.tesseract_cmd = exe
         langs = pt.get_languages(config="")
     except Exception:
         return False, "pytesseract_import_failed"
@@ -240,7 +270,7 @@ def _tesseract_probe() -> tuple[bool, str | None]:
 
 @lru_cache(maxsize=1)
 def _tesseract_hebrew_ready() -> bool:
-    """True when ``tesseract`` is on PATH, ``pytesseract`` importable, and ``heb`` exists."""
+    """True when a ``tesseract`` binary is found (PATH, env, or common paths), ``pytesseract`` works, and ``heb`` exists."""
     ok, _reason = _tesseract_probe()
     return ok
 
@@ -279,6 +309,10 @@ def _buyer_name_from_ocr_pymupdf_tesseract(
 ) -> str:
     """V.5.7 wide crop → 300 DPI pixmap → grayscale → Tesseract ``heb`` PSM 7 (+6 if weak)."""
     import pytesseract  # noqa: PLC0415
+
+    exe = _resolved_tesseract_executable()
+    if exe:
+        pytesseract.pytesseract.tesseract_cmd = exe
 
     x0 = float(email_w["x0"])
     x1 = float(email_w["x1"])

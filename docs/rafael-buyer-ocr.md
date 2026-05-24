@@ -9,10 +9,11 @@
 ## אימות סביבה (מקומי / שרת)
 
 1. **משתנה סביבה** — ודא ש־`RAFAEL_BUYER_OCR` **לא** מוגדר ל־`0` / `false` / `off` (ראו `.env.local.example`).
-2. **Tesseract על ה־PATH** — באותו תהליך שמריץ את ה־Python של ה־API:
-   - `which tesseract`
+2. **מיקום Tesseract** — הקוד מחפש לפי הסדר: `TESSERACT_CMD` / `RAFAEL_TESSERACT_CMD` (נתיב מלא), אחר כך `which tesseract`, ואז נתיבים נפוצים (`/opt/homebrew/bin/tesseract`, `/usr/local/bin/tesseract`, `/usr/bin/tesseract`). אם עדיין מקבלים `tesseract_not_on_path`, הגדר אחד ממשתני ה־CMD לנתיב המלא שבו `tesseract` מותקן.
+3. **רשימת שפות** — באותו תהליך שמריץ את ה־Python של ה־API:
+   - `which tesseract` (או הנתיב מה־CMD)
    - `tesseract --list-langs` — חייבת להופיע **`heb`**.
-3. **Python** — מהתיקייה עם `api/` ב־`PYTHONPATH` (או מתוך `api/`):
+4. **Python** — מהתיקייה עם `api/` ב־`PYTHONPATH` (או מתוך `api/`):
 
    ```bash
    python3 api/check_rafael_ocr_env.py

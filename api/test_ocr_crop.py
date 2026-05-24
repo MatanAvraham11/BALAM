@@ -13,7 +13,6 @@ Usage::
 
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -34,6 +33,7 @@ from parse_rafael_rfq import (  # noqa: E402
     _BUYER_OCR_DPI,
     _find_buyer_email_word,
     _page_clean_words,
+    _resolved_tesseract_executable,
 )
 
 _OUT_PATH = _REPO_ROOT / "debug_crop.png"
@@ -93,11 +93,14 @@ def main() -> int:
         f"→ {pix.width}×{pix.height}px @ {_BUYER_OCR_DPI:.0f} DPI → {_OUT_PATH}",
     )
 
-    if not shutil.which("tesseract"):
-        print("SKIP OCR: tesseract not on PATH", file=sys.stderr)
+    exe = _resolved_tesseract_executable()
+    if not exe:
+        print("SKIP OCR: tesseract not found (PATH or TESSERACT_CMD)", file=sys.stderr)
         return 0
     try:
         import pytesseract  # noqa: PLC0415
+
+        pytesseract.pytesseract.tesseract_cmd = exe
     except ModuleNotFoundError:
         print("SKIP OCR: pytesseract not installed", file=sys.stderr)
         return 0
