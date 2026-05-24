@@ -12,12 +12,15 @@ Globals (page-header band, y ≲ 140 pt)
     * RFQ number      — sz=10, x≈133–163, y≈55      (also in ``FAX_INFO:…``)
     * Issue date      — sz=8,  x≈251–295, y≈85
     * Buyer name      — **V.5.9:** deterministic OCR only: pdfplumber finds the
-      ``…@rafael.co.il`` anchor on page 1; **PyMuPDF** renders a **300 DPI** **wide**
-      clip (``x0−20 … x1+150``, ``top−45 … top−15``) above the e-mail; the crop is
-      sent to **OCR.space** ``/parse/image`` with ``language=heb`` (``OCR_SPACE_API_KEY``).
-      Label noise is removed with deterministic ``replace`` on ``קניין:``, ``קניין``,
-      ``:``, ``-``, newlines. ``_hebrew_letter_count`` (U+05D0–U+05EA) must be ≥2
-      or the buyer field is left empty (no e-mail map).
+      ``…@rafael.co.il`` anchor on page 1; **PyMuPDF** renders a **300 DPI** **tight**
+      clip (``x0−12 … x1+60``, ``top−28 … top−13``) framing only the buyer-name row
+      so the row above (RFQ number) and the cell on the right (``תאריך הדפסה``) are
+      excluded from OCR input. The crop is sent to **OCR.space** as **multipart**
+      ``file=`` (JPEG) with ``language=heb``/``auto`` on Engine **3** then **2**
+      (``OCR_SPACE_API_KEY``). ``_buyer_ocr_label_clean`` strips label (``קניין:``),
+      separators, digits, and known header phrases (``תאריך הדפסה`` / ``הרשומים``)
+      and returns the longest Hebrew run. ``_hebrew_letter_count`` (U+05D0–U+05EA)
+      must be ≥2 or the buyer field is left empty (no e-mail map).
       There is **no** hardcoded buyer dictionary and **no** e-mail local-part
       fallback. If the anchor or OCR output is unusable (fewer than two Hebrew
       letters after cleaning), the buyer field is ``""``.
@@ -104,11 +107,15 @@ _ISSUE_DATE_Y = (80.0, 90.0)
 _EMAIL_X_MAX = 200.0
 _EMAIL_Y = (86.0, 112.0)
 
-# V.5.9 buyer-name OCR: wide band above e-mail anchor (full buyer line, no clipped ascenders).
-_BUYER_CROP_PAD_X0_LEFT = 20.0
-_BUYER_CROP_X1_PAD_RIGHT = 150.0
-_BUYER_CROP_DELTA_TOP = 45.0
-_BUYER_CROP_DELTA_BOTTOM = 15.0
+# V.5.9 buyer-name OCR: tight band above e-mail anchor.
+# Cropped to ONLY the buyer-name row (no "תאריך הדפסה" cell, no row above).
+# x0 extends slightly left of the e-mail x0 to catch long Hebrew names; x1 extends
+# just past the e-mail x1 so the "תאריך הדפסה:" cell to the right is excluded.
+# Vertically: DELTA_TOP/DELTA_BOTTOM frame the single buyer row above the e-mail.
+_BUYER_CROP_PAD_X0_LEFT = 12.0
+_BUYER_CROP_X1_PAD_RIGHT = 60.0
+_BUYER_CROP_DELTA_TOP = 28.0
+_BUYER_CROP_DELTA_BOTTOM = 13.0
 _BUYER_OCR_DPI = 300.0
 
 # Per-row column x-bands
@@ -311,16 +318,35 @@ def _find_buyer_email_word(
     return min(pool, key=lambda w: abs(float(w["top"]) - centre))
 
 
+_BUYER_OCR_JUNK_PHRASES: tuple[str, ...] = (
+    "תאריך הדפסה",
+    "הרשומים",
+    "קנייה",  # common OCR misread of "קניין"
+    "קניין",
+)
+
+
 def _buyer_ocr_label_clean(raw: str) -> str:
-    return (
-        (raw or "")
-        .replace("קניין:", "")
-        .replace("קניין", "")
-        .replace(":", "")
-        .replace("-", "")
-        .replace("\n", "")
-        .strip()
-    )
+    """Strip label / separators / header phrases / digits; keep best Hebrew run.
+
+    The crop is now tight to the buyer-name row, but in case OCR still pulls in
+    adjacent header text we defensively remove known junk and extract the longest
+    Hebrew-only span (U+0590–U+05FF) from what remains.
+    """
+    s = (raw or "").replace("\n", " ").replace("\r", " ")
+    s = s.replace(":", " ").replace("|", " ")
+    for phrase in _BUYER_OCR_JUNK_PHRASES:
+        s = s.replace(phrase, " ")
+    s = re.sub(r"\d+", " ", s)
+    s = re.sub(r"[^\u0590-\u05FF\s]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return ""
+    runs = re.findall(r"[\u0590-\u05FF]+(?:\s+[\u0590-\u05FF]+)*", s)
+    if not runs:
+        return s
+    best = max(runs, key=lambda t: (_hebrew_letter_count(t), len(t)))
+    return best.strip()
 
 
 def _pil_jpeg_bytes_under_limit(img: Image.Image, max_bytes: int = _OCR_SPACE_MAX_IMAGE_BYTES) -> bytes:
