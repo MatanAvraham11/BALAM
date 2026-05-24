@@ -25,6 +25,7 @@ type RafaelResponse = {
   submission_date: string;
   buyer_ocr_ready?: boolean;
   buyer_ocr_reason?: string | null;
+  buyer_ocr_http_status?: number | null;
   rows: RafaelRow[];
   txt_base64: string;
   txt_filename: string;
@@ -34,6 +35,7 @@ type RafaelResponse = {
 function rafaelBuyerDisplayLabel(
   buyerName: string,
   reason: string | null | undefined,
+  httpStatus?: number | null,
 ): string {
   const t = (buyerName || "").trim();
 
@@ -77,13 +79,27 @@ function rafaelBuyerDisplayLabel(
       "התמונה ל-OCR.space גדולה מדי (413) — נסה RFQ אחר או פנה לתמיכה",
     ocr_space_quota_exceeded:
       "נראה שנגמרו קרדיטים או מכסה ב-OCR.space — היכנס לחשבון ובדוק את התוכנית",
+    ocr_space_bad_request:
+      "בקשה לא תקינה ל-OCR.space (400) — נסה שוב; אם חוזר, שלח לתמיכה את קוד ה-HTTP מהשרת",
+    ocr_space_server_error:
+      "שרת OCR.space החזיר שגיאה (5xx) אחרי ניסיונות חוזרים — נסה שוב בעוד דקות",
+    ocr_space_client_error:
+      "תשובת לקוח לא צפויה מ-OCR.space (קוד 4xx) — בדוק מפתח, חשבון, או חסימת רשת",
     ocr_space_http_error:
-      "תשובת שרת לא צפויה מ-OCR.space. נסה שוב; אם חוזר — RAFAEL_OCR_DEBUG=1 בשרת לפרטים",
+      "תשובת HTTP לא צפויה מ-OCR.space — נסה שוב; אם חוזר, RAFAEL_OCR_DEBUG=1 בשרת לפרטים",
     ocr_space_json_error:
       "תשובה לא תקינה מ-OCR.space (לא JSON) — בדוק רשת או פרוקסי",
   };
   if (!t && reason && weakOcr[reason]) {
-    return weakOcr[reason];
+    let msg = weakOcr[reason];
+    if (
+      typeof httpStatus === "number" &&
+      httpStatus > 0 &&
+      reason !== "ocr_space_network_error"
+    ) {
+      msg = `${msg} (קוד HTTP ${httpStatus})`;
+    }
+    return msg;
   }
 
   return t || "—";
@@ -167,7 +183,11 @@ export default function RafaelTab() {
 
   const buyerDisplay = useMemo(() => {
     if (!data) return "—";
-    return rafaelBuyerDisplayLabel(data.buyer_name, data.buyer_ocr_reason);
+    return rafaelBuyerDisplayLabel(
+      data.buyer_name,
+      data.buyer_ocr_reason,
+      data.buyer_ocr_http_status,
+    );
   }, [data]);
 
   const tableRows = useMemo(() => {
@@ -175,6 +195,7 @@ export default function RafaelTab() {
     const label = rafaelBuyerDisplayLabel(
       data.buyer_name,
       data.buyer_ocr_reason,
+      data.buyer_ocr_http_status,
     );
     const replaceBuyerCell =
       data.buyer_name === "OCR Failed" ||

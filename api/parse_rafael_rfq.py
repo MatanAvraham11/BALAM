@@ -221,13 +221,21 @@ _OCR_SPACE_URL = "https://api.ocr.space/parse/image"
 # Free OCR.space tier payload limit is ~1 MB; stay safely under.
 _OCR_SPACE_MAX_IMAGE_BYTES = 950_000
 
+# Transient HTTP statuses: retry before treating the OCR attempt as failed.
+_OCR_SPACE_RETRYABLE_HTTP: frozenset[int] = frozenset({
+    408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524,
+})
+
 # Set during ``parse_rafael_rfq`` / buyer OCR for ``rafael_buyer_ocr_api_status`` (UI / API).
 _RAFAEL_LAST_OCR_PARSE_REASON: str | None = None
+# Last non-OK HTTP status from OCR.space (when ``buyer_ocr_reason`` is HTTP-related); ``None`` if N/A.
+_RAFAEL_LAST_OCR_HTTP_STATUS: int | None = None
 
 
 def _reset_rafael_buyer_ocr_parse_reason() -> None:
-    global _RAFAEL_LAST_OCR_PARSE_REASON
+    global _RAFAEL_LAST_OCR_PARSE_REASON, _RAFAEL_LAST_OCR_HTTP_STATUS
     _RAFAEL_LAST_OCR_PARSE_REASON = None
+    _RAFAEL_LAST_OCR_HTTP_STATUS = None
 
 
 def rafael_buyer_ocr_api_status() -> dict[str, Any]:
@@ -235,14 +243,21 @@ def rafael_buyer_ocr_api_status() -> dict[str, Any]:
 
     When the env stack is ready but the buyer field is still empty, ``reason`` may
     be ``ocr_space_no_hebrew`` or ``ocr_space_parse_empty`` (set during parse).
+    ``buyer_ocr_http_status`` is set when the failure was classified from an HTTP
+    status (not connection-only).
     """
     ready, base = _rafael_buyer_ocr_probe()
+    out: dict[str, Any] = {}
     if not ready:
-        return {"ready": False, "reason": base}
-    sub = _RAFAEL_LAST_OCR_PARSE_REASON
-    if sub:
-        return {"ready": True, "reason": sub}
-    return {"ready": True, "reason": None}
+        out["ready"] = False
+        out["reason"] = base
+    else:
+        out["ready"] = True
+        out["reason"] = _RAFAEL_LAST_OCR_PARSE_REASON
+    hs = _RAFAEL_LAST_OCR_HTTP_STATUS
+    if hs is not None:
+        out["buyer_ocr_http_status"] = hs
+    return out
 
 
 def _rafael_buyer_ocr_probe() -> tuple[bool, str | None]:
@@ -366,7 +381,10 @@ def _buyer_name_from_ocr_space(
     the cleaned text has at least two Hebrew letters; otherwise a stable code for
     ``rafael_buyer_ocr_api_status``.
     """
+    global _RAFAEL_LAST_OCR_HTTP_STATUS
     import requests  # noqa: PLC0415
+
+    _RAFAEL_LAST_OCR_HTTP_STATUS = None
 
     api_key = (os.environ.get("OCR_SPACE_API_KEY") or "").strip()
     if not api_key:
@@ -458,7 +476,7 @@ def _buyer_name_from_ocr_space(
             if r.ok:
                 break
 
-            if r.status_code in (429, 502, 503, 504) and attempt < 2:
+            if r.status_code in _OCR_SPACE_RETRYABLE_HTTP and attempt < 2:
                 continue
 
             n_http_bad += 1
@@ -521,12 +539,19 @@ def _buyer_name_from_ocr_space(
         nz = [c for c in http_fail_statuses if c != 0]
         if not nz:
             return "", "ocr_space_network_error"
+        _RAFAEL_LAST_OCR_HTTP_STATUS = nz[0]
         if all(c in (401, 403) for c in nz):
             return "", "ocr_space_auth_error"
         if any(c == 429 for c in nz):
             return "", "ocr_space_rate_limited"
-        if any(c == 413 for c in nz):
+        if any(c in (413, 414) for c in nz):
             return "", "ocr_space_payload_too_large"
+        if any(c == 400 for c in nz):
+            return "", "ocr_space_bad_request"
+        if any(c >= 500 for c in nz):
+            return "", "ocr_space_server_error"
+        if any(400 <= c < 500 for c in nz):
+            return "", "ocr_space_client_error"
         return "", "ocr_space_http_error"
     if n_posts and n_json_bad == n_posts and not saw_nonempty_raw:
         return "", "ocr_space_json_error"

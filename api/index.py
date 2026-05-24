@@ -367,7 +367,7 @@ async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONRespons
 
         ocr_status = rafael_buyer_ocr_api_status()
 
-        return JSONResponse(content={
+        body: dict[str, Any] = {
             "rfq_number": rfq.rfq_number,
             "buyer_name": rfq.buyer_name,
             "submission_date": rfq.submission_date,
@@ -376,6 +376,9 @@ async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONRespons
             "rows": rows,
             "txt_base64": base64.b64encode(txt_bytes).decode(),
             "txt_filename": txt_basename,
-        })
+        }
+        if "buyer_ocr_http_status" in ocr_status:
+            body["buyer_ocr_http_status"] = ocr_status["buyer_ocr_http_status"]
+        return JSONResponse(content=body)
     finally:
         os.unlink(tmp_path)
