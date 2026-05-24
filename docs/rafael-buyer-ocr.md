@@ -8,7 +8,9 @@
 
 ## מנוע OCR.space
 
-עברית נתמכת ב־**OCREngine 3** (לפי תיעוד OCR.space). הפרסר מנסה `language=heb` עם מנועים **3 → 2 → 1**, ואם עדיין אין מספיק עברית — ניסוי נוסף עם `language=auto` ומנוע 3. לכל שילוב שפה/מנוע יש עד **שלושה** ניסיונות HTTP עם השהיה קצרה בין ניסיונות, כולל `User-Agent` תקני; ניסיון חוזר על קודים זמניים כולל **408, 429, 500, 502–504, 520–524**. סיווג שגיאות: רשת, 401/403, 429, 413/414, 400, 5xx, 4xx אחר, ורק אז «HTTP כללי». בתגובת ה־API ייתכן גם `buyer_ocr_http_status` (מספר) לצד `buyer_ocr_reason`.
+עברית נתמכת ב־**OCREngine 3** בלבד. Engine 1 דוחה `language=heb`/`auto` עם HTTP 400, לכן הוא הוסר מ־fallback. הסדר הוא: `language=heb` עם **Engine 3** → `language=auto` עם **Engine 3** → `language=auto` עם **Engine 2** (auto-detect). לכל שילוב יש עד **שלושה** ניסיונות HTTP עם השהיה קצרה, `User-Agent` תקני; ניסיון חוזר על קודים זמניים כולל **408, 429, 500, 502–504, 520–524**. סיווג שגיאות: רשת, 401/403, 429, 413/414, 400, 5xx, 4xx אחר, ורק אז «HTTP כללי». בתגובת ה־API ייתכן גם `buyer_ocr_http_status` (מספר) לצד `buyer_ocr_reason`.
+
+**שינוי חשוב:** השליחה היא **multipart `file=`** (לא `base64Image`). שליחת `base64Image` בלי הקידומת `data:image/jpeg;base64,` גורמת ל-OCR.space להחזיר HTTP 400 ("Not a valid base64 image"). multipart גם חוסך ~33% נפח על החוט.
 
 ## אימות סביבה
 

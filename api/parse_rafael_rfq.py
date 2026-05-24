@@ -47,7 +47,6 @@ then globals + locals (``\u05d6\u05de\u05df \u05d0\u05e1\u05e4\u05e7\u05d4 \u05d
 
 from __future__ import annotations
 
-import base64
 import io
 import os
 import re
@@ -416,7 +415,6 @@ def _buyer_name_from_ocr_space(
 
     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     jpeg_bytes = _pil_jpeg_bytes_under_limit(img)
-    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
 
     best_clean = ""
     best_hc = -1
@@ -432,6 +430,12 @@ def _buyer_name_from_ocr_space(
     from requests import exceptions as req_exc  # noqa: PLC0415
 
     def one_call(language: str, engine: str) -> None:
+        """One OCR.space call using multipart file upload (recommended by OCR.space docs).
+
+        Note: ``base64Image`` requires the ``data:image/jpeg;base64,`` data-URI prefix
+        or the server returns HTTP 400 ("Not a valid base64 image"). Multipart ``file``
+        avoids the prefix gotcha and is ~33% smaller on the wire.
+        """
         nonlocal best_clean, best_hc, n_posts, n_http_bad, n_json_bad, saw_nonempty_raw
         n_posts += 1
         r: Any = None
@@ -444,11 +448,12 @@ def _buyer_name_from_ocr_space(
                     data={
                         "apikey": api_key,
                         "language": language,
-                        "base64Image": b64,
-                        "filetype": "JPG",
                         "isOverlayRequired": "false",
                         "scale": "true",
                         "OCREngine": engine,
+                    },
+                    files={
+                        "file": ("buyer.jpg", jpeg_bytes, "image/jpeg"),
                     },
                     timeout=90,
                     headers={
@@ -523,11 +528,15 @@ def _buyer_name_from_ocr_space(
             best_hc = hc
             best_clean = clean
 
-    for engine in ("3", "2", "1"):
-        one_call("heb", engine)
-        if best_hc >= 2:
-            return best_clean, None
+    # OCR.space: Hebrew is supported on Engine 3 only; Engine 1 rejects
+    # language=heb / language=auto with HTTP 400. Engine 2 supports auto-detect.
+    one_call("heb", "3")
+    if best_hc >= 2:
+        return best_clean, None
     one_call("auto", "3")
+    if best_hc >= 2:
+        return best_clean, None
+    one_call("auto", "2")
     if best_hc >= 2:
         return best_clean, None
 
