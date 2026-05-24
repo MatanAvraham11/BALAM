@@ -4,11 +4,15 @@
 
 ב־[`api/parse_rafael_rfq.py`](../api/parse_rafael_rfq.py), השדה `buyer_name` מקבל את המחרוזת **`OCR Failed`** כש־**אין מפתח OCR.space** (`OCR_SPACE_API_KEY` ריק) או כש־`RAFAEL_BUYER_OCR` כבוי. **לא** נדרש Tesseract מקומי מאז V.5.9.
 
-כשה־API רץ אבל אחרי הניקוי יש פחות מ־2 אותיות עבריות בטווח U+05D0–U+05EA, השדה נשאר **ריק** (`""`) — לא `OCR Failed`.
+כשה־API רץ אבל אחרי הניקוי יש פחות מ־2 אותיות עבריות בטווח U+05D0–U+05EA, השדה נשאר **ריק** (`""`) — לא `OCR Failed`. בתגובת `POST /api/rafael-bom` אז `buyer_ocr_ready` יכול להיות `true` ו־`buyer_ocr_reason` יסביר למשל `ocr_space_no_hebrew`, `ocr_space_parse_empty`, `ocr_space_http_error` (ראו `rafael_buyer_ocr_api_status` ב־Python).
+
+## מנוע OCR.space
+
+עברית נתמכת ב־**OCREngine 3** (לפי תיעוד OCR.space). הפרסר מנסה `language=heb` עם מנועים **3 → 2 → 1**, ואם עדיין אין מספיק עברית — ניסוי נוסף עם `language=auto` ומנוע 3.
 
 ## אימות סביבה
 
-1. **`OCR_SPACE_API_KEY`** — חובה בפריסת Python (Vercel env / worker / `.env.local`).
+1. **`OCR_SPACE_API_KEY`** — חובה בפריסת **Python** (Vercel env לפונקציית השרת / worker). הגדרה רק ב־Next (`.env.local`) לא מספיקה אם הפרסור רץ ב־Python נפרד.
 2. **`RAFAEL_BUYER_OCR`** — לא להגדיר ל־`0` / `false` / `off` אם רוצים OCR.
 3. בדיקה מהירה:
 

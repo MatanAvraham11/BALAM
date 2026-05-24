@@ -30,32 +30,53 @@ type RafaelResponse = {
   txt_filename: string;
 };
 
-/** Human-readable Hebrew when the API returns the sentinel ``OCR Failed`` (infra / env). */
+/** Human-readable Hebrew for buyer field: success, infra failure, or weak OCR. */
 function rafaelBuyerDisplayLabel(
   buyerName: string,
   reason: string | null | undefined,
 ): string {
-  if (buyerName !== "OCR Failed") {
-    return buyerName.trim() ? buyerName : "—";
+  const t = (buyerName || "").trim();
+
+  if (t && t !== "OCR Failed") {
+    return t;
   }
-  const byReason: Record<string, string> = {
-    rafael_buyer_ocr_disabled:
-      "OCR לשם הקניין כבוי (הסר את RAFAEL_BUYER_OCR או הגדר לערך חיובי)",
-    ocr_space_api_key_missing:
-      "חסר מפתח OCR.space — הגדר OCR_SPACE_API_KEY בשרת (Vercel / worker)",
-    requests_import_failed:
-      "חסרה חבילת requests ב-Python (התקן requirements.txt)",
-    tesseract_not_on_path:
-      "חסר Tesseract בשרת (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
-    pytesseract_import_failed:
-      "שגיאת Tesseract/pytesseract (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
-    hebrew_lang_pack_missing:
-      "חבילת heb ל-Tesseract (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
+
+  if (t === "OCR Failed") {
+    const byReason: Record<string, string> = {
+      rafael_buyer_ocr_disabled:
+        "OCR לשם הקניין כבוי (הסר את RAFAEL_BUYER_OCR או הגדר לערך חיובי)",
+      ocr_space_api_key_missing:
+        "חסר מפתח OCR.space — הגדר OCR_SPACE_API_KEY בשרת (Vercel / worker)",
+      requests_import_failed:
+        "חסרה חבילת requests ב-Python (התקן requirements.txt)",
+      tesseract_not_on_path:
+        "חסר Tesseract בשרת (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
+      pytesseract_import_failed:
+        "שגיאת Tesseract/pytesseract (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
+      hebrew_lang_pack_missing:
+        "חבילת heb ל-Tesseract (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
+    };
+    return (
+      byReason[reason ?? ""] ??
+      "לא ניתן להריץ OCR לשם הקניין (בדוק OCR_SPACE_API_KEY ופריסת השרת)"
+    );
+  }
+
+  const weakOcr: Record<string, string> = {
+    ocr_space_no_hebrew:
+      "OCR רץ אך לא זוהו מספיק אותיות עבריות בשם הקניין (נסה תמונה/מנוע אחר או RAFAEL_OCR_DEBUG=1)",
+    ocr_space_parse_empty:
+      "OCR.space לא החזיר טקסט מהאזור שנחתך — בדוק את ה-PDF או את מפתח ה-API",
+    ocr_space_http_error:
+      "שגיאת HTTP מול OCR.space (מכסה, חסימה, או תקלה זמנית בשרת)",
+    ocr_space_json_error:
+      "תשובה לא תקינה מ-OCR.space (לא JSON) — בדוק רשת או פרוקסי",
   };
-  return (
-    byReason[reason ?? ""] ??
-    "לא ניתן להריץ OCR לשם הקניין (בדוק OCR_SPACE_API_KEY ופריסת השרת)"
-  );
+  if (!t && reason && weakOcr[reason]) {
+    return weakOcr[reason];
+  }
+
+  return t || "—";
 }
 
 const COLUMNS = [
@@ -145,12 +166,14 @@ export default function RafaelTab() {
       data.buyer_name,
       data.buyer_ocr_reason,
     );
-    if (data.buyer_name !== "OCR Failed") return data.rows;
-    return data.rows.map((row) =>
-      row["שם קניין"] === "OCR Failed"
-        ? { ...row, "שם קניין": label }
-        : row,
-    );
+    const replaceBuyerCell =
+      data.buyer_name === "OCR Failed" ||
+      (!(data.buyer_name || "").trim() && Boolean(data.buyer_ocr_reason));
+    if (!replaceBuyerCell) return data.rows;
+    return data.rows.map((row) => ({
+      ...row,
+      "שם קניין": label,
+    }));
   }, [data]);
 
   return (

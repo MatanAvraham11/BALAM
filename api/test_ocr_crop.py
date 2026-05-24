@@ -93,7 +93,7 @@ def main() -> int:
         f"→ {pix.width}×{pix.height}px @ {_BUYER_OCR_DPI:.0f} DPI → {_OUT_PATH}",
     )
 
-    clean = _buyer_name_from_ocr_space(pdf_path, anchor)
+    clean, _reason = _buyer_name_from_ocr_space(pdf_path, anchor)
     print("CLEAN_NAME:", repr(clean))
     return 0
 

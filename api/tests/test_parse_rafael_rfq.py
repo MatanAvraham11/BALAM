@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -34,11 +35,13 @@ from parse_rafael_rfq import (  # noqa: E402
     _classify_fai_digit,
     _format_issue_date,
     _hebrew_letter_count,
+    _ocr_space_collect_parsed_text,
     _parse_dmy,
     _tesseract_hebrew_ready,
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
+    rafael_buyer_ocr_api_status,
     rafael_buyer_ocr_diagnostic,
 )
 
@@ -203,6 +206,9 @@ class FlattenAndWriteTests(unittest.TestCase):
 
 class BuyerOcrDiagnosticTests(unittest.TestCase):
     def test_shape_matches_ocr_space_ready(self):
+        from parse_rafael_rfq import _reset_rafael_buyer_ocr_parse_reason
+
+        _reset_rafael_buyer_ocr_parse_reason()
         d = rafael_buyer_ocr_diagnostic()
         self.assertIsInstance(d, dict)
         self.assertIn("ready", d)
@@ -221,6 +227,9 @@ class BuyerOcrDiagnosticTests(unittest.TestCase):
                     "requests_import_failed",
                 ),
             )
+        api = rafael_buyer_ocr_api_status()
+        self.assertEqual(api["ready"], d["ready"])
+        self.assertEqual(api["reason"], d["reason"])
 
 
 class PdfSmokeTests(unittest.TestCase):
@@ -274,6 +283,63 @@ class PdfSmokeTests(unittest.TestCase):
                 lines = body.rstrip("\r\n").split("\r\n")
                 self.assertEqual(len(lines), 1 + len(rows))
                 body.encode("windows-1255", errors="strict")
+
+
+class OcrSpaceCollectParsedTextTests(unittest.TestCase):
+    def test_collects_text_when_ocr_exit_code_not_1_or_2(self):
+        payload = {
+            "OCRExitCode": 3,
+            "IsErroredOnProcessing": True,
+            "ParsedResults": [
+                {"ParsedText": "קניין: דוד כהן", "FileParseExitCode": 1},
+            ],
+        }
+        out = _ocr_space_collect_parsed_text(payload)
+        self.assertIn("דוד", out)
+
+    def test_empty_when_no_parsed_blocks(self):
+        self.assertEqual(_ocr_space_collect_parsed_text({"ParsedResults": []}), "")
+
+
+class BuyerDetectAndApiStatusTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from parse_rafael_rfq import _reset_rafael_buyer_ocr_parse_reason
+
+        _reset_rafael_buyer_ocr_parse_reason()
+
+    @unittest.mock.patch("parse_rafael_rfq._rafael_buyer_ocr_probe", return_value=(True, None))
+    @unittest.mock.patch("parse_rafael_rfq._buyer_name_from_ocr_space")
+    def test_detect_buyer_accepts_hebrew_from_ocr(
+        self,
+        mock_ocr: unittest.mock.Mock,
+        _probe: unittest.mock.Mock,
+    ) -> None:
+        from parse_rafael_rfq import _detect_buyer
+
+        mock_ocr.return_value = ("יוסי שני", None)
+        pages = [[{"text": "x@rafael.co.il", "x0": 100, "x1": 180, "top": 95}]]
+        name = _detect_buyer(Path("/tmp/rafael_buyer_test.pdf"), pages)
+        self.assertEqual(name, "יוסי שני")
+        st = rafael_buyer_ocr_api_status()
+        self.assertTrue(st["ready"])
+        self.assertIsNone(st["reason"])
+
+    @unittest.mock.patch("parse_rafael_rfq._rafael_buyer_ocr_probe", return_value=(True, None))
+    @unittest.mock.patch("parse_rafael_rfq._buyer_name_from_ocr_space")
+    def test_api_status_shows_no_hebrew_when_ocr_too_weak(
+        self,
+        mock_ocr: unittest.mock.Mock,
+        _probe: unittest.mock.Mock,
+    ) -> None:
+        from parse_rafael_rfq import _detect_buyer
+
+        mock_ocr.return_value = ("hello", "ocr_space_no_hebrew")
+        pages = [[{"text": "x@rafael.co.il", "x0": 100, "x1": 180, "top": 95}]]
+        name = _detect_buyer(Path("/tmp/rafael_buyer_test.pdf"), pages)
+        self.assertEqual(name, "")
+        st = rafael_buyer_ocr_api_status()
+        self.assertTrue(st["ready"])
+        self.assertEqual(st["reason"], "ocr_space_no_hebrew")
 
 
 if __name__ == "__main__":

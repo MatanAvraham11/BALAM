@@ -22,7 +22,9 @@ Globals (page-header band, y ≲ 140 pt)
       fallback. If the anchor or OCR output is unusable (fewer than two Hebrew
       letters after cleaning), the buyer field is ``""``.
       Set ``RAFAEL_BUYER_OCR=0`` to disable OCR (still returns ``"OCR Failed"``;
-      the HTTP API adds ``buyer_ocr_ready`` / ``buyer_ocr_reason`` from ``rafael_buyer_ocr_diagnostic()``).
+      the HTTP API adds ``buyer_ocr_ready`` / ``buyer_ocr_reason`` from
+      ``rafael_buyer_ocr_api_status()`` (env probe plus parse-time codes such as
+      ``ocr_space_no_hebrew`` when the key is set but OCR text is too weak).
     * Buyer email     — sz=9,  x≈100–180, y≈100     (geometry anchor for OCR crop)
     * Buyer phone     — sz=9,  x≈130–180, y≈88
     * Submission date — first ``dd/mm/yyyy`` found in ``extract_text()`` in page order
@@ -218,6 +220,29 @@ _OCR_SPACE_URL = "https://api.ocr.space/parse/image"
 # Free OCR.space tier payload limit is ~1 MB; stay safely under.
 _OCR_SPACE_MAX_IMAGE_BYTES = 950_000
 
+# Set during ``parse_rafael_rfq`` / buyer OCR for ``rafael_buyer_ocr_api_status`` (UI / API).
+_RAFAEL_LAST_OCR_PARSE_REASON: str | None = None
+
+
+def _reset_rafael_buyer_ocr_parse_reason() -> None:
+    global _RAFAEL_LAST_OCR_PARSE_REASON
+    _RAFAEL_LAST_OCR_PARSE_REASON = None
+
+
+def rafael_buyer_ocr_api_status() -> dict[str, Any]:
+    """``buyer_ocr_ready`` / ``buyer_ocr_reason`` for HTTP responses after a parse.
+
+    When the env stack is ready but the buyer field is still empty, ``reason`` may
+    be ``ocr_space_no_hebrew`` or ``ocr_space_parse_empty`` (set during parse).
+    """
+    ready, base = _rafael_buyer_ocr_probe()
+    if not ready:
+        return {"ready": False, "reason": base}
+    sub = _RAFAEL_LAST_OCR_PARSE_REASON
+    if sub:
+        return {"ready": True, "reason": sub}
+    return {"ready": True, "reason": None}
+
 
 def _rafael_buyer_ocr_probe() -> tuple[bool, str | None]:
     """Return ``(ready, reason_code)`` for Rafael buyer OCR via OCR.space.
@@ -306,19 +331,13 @@ def _pil_jpeg_bytes_under_limit(img: Image.Image, max_bytes: int = _OCR_SPACE_MA
 
 
 def _ocr_space_collect_parsed_text(payload: dict[str, Any]) -> str:
-    """Join ``ParsedResults[].ParsedText`` from OCR.space JSON."""
+    """Join ``ParsedResults[].ParsedText`` from OCR.space JSON.
+
+    Prefer returning any non-empty ``ParsedText`` even when ``OCRExitCode`` is
+    not 1/2 (Engine 3 / edge cases), as long as the block-level parse code is OK.
+    """
     if not isinstance(payload, dict):
         return ""
-    if payload.get("IsErroredOnProcessing"):
-        return ""
-    code = payload.get("OCRExitCode")
-    if code is not None:
-        try:
-            ic = int(code)
-        except (TypeError, ValueError):
-            ic = -1
-        if ic not in (1, 2):
-            return ""
     chunks: list[str] = []
     for block in payload.get("ParsedResults") or []:
         if not isinstance(block, dict):
@@ -339,13 +358,18 @@ def _ocr_space_collect_parsed_text(payload: dict[str, Any]) -> str:
 def _buyer_name_from_ocr_space(
     pdf_path: Path,
     email_w: dict[str, Any],
-) -> str:
-    """V.5.9 wide crop → 300 DPI pixmap → JPEG → OCR.space ``/parse/image`` (``language=heb``)."""
+) -> tuple[str, str | None]:
+    """V.5.9 crop → JPEG → OCR.space. Hebrew is supported on **Engine 3** (see OCR.space docs).
+
+    Returns ``(cleaned_text, failure_reason)``. ``failure_reason`` is ``None`` when
+    the cleaned text has at least two Hebrew letters; otherwise a stable code for
+    ``rafael_buyer_ocr_api_status``.
+    """
     import requests  # noqa: PLC0415
 
     api_key = (os.environ.get("OCR_SPACE_API_KEY") or "").strip()
     if not api_key:
-        return ""
+        return "", None
 
     x0 = float(email_w["x0"])
     x1 = float(email_w["x1"])
@@ -357,14 +381,14 @@ def _buyer_name_from_ocr_space(
 
     rect = fitz.Rect(clip_x0, clip_y0, clip_x1, clip_y1)
     if rect.is_empty or rect.width <= 0 or rect.height <= 0:
-        return ""
+        return "", "ocr_space_parse_empty"
 
     doc = fitz.open(pdf_path)
     try:
         page = doc[0]
         clip = rect & page.rect
         if clip.is_empty:
-            return ""
+            return "", "ocr_space_parse_empty"
         zoom = _BUYER_OCR_DPI / 72.0
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
@@ -377,13 +401,23 @@ def _buyer_name_from_ocr_space(
 
     best_clean = ""
     best_hc = -1
-    for engine in ("2", "1"):
+    n_posts = 0
+    n_http_bad = 0
+    n_json_bad = 0
+    saw_nonempty_raw = False
+    ocr_debug = os.environ.get("RAFAEL_OCR_DEBUG", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+    def one_call(language: str, engine: str) -> None:
+        nonlocal best_clean, best_hc, n_posts, n_http_bad, n_json_bad, saw_nonempty_raw
+        n_posts += 1
         try:
             resp = requests.post(
                 _OCR_SPACE_URL,
                 data={
                     "apikey": api_key,
-                    "language": "heb",
+                    "language": language,
                     "base64Image": b64,
                     "filetype": "JPG",
                     "isOverlayRequired": "false",
@@ -392,22 +426,64 @@ def _buyer_name_from_ocr_space(
                 },
                 timeout=90,
             )
+        except OSError:
+            n_http_bad += 1
+            return
+        if not resp.ok:
+            n_http_bad += 1
+            if ocr_debug:
+                warnings.warn(
+                    f"OCR.space HTTP {resp.status_code} for engine={engine} lang={language}",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            return
+        try:
             payload = resp.json()
-        except Exception:
-            continue
+        except ValueError:
+            n_json_bad += 1
+            return
         raw = _ocr_space_collect_parsed_text(payload)
+        if raw:
+            saw_nonempty_raw = True
+        if ocr_debug and not raw:
+            warnings.warn(
+                "OCR.space debug: "
+                f"status={resp.status_code} OCRExitCode={payload.get('OCRExitCode')!r} "
+                f"IsErrored={payload.get('IsErroredOnProcessing')!r} "
+                f"ErrorMessage={payload.get('ErrorMessage')!r}",
+                UserWarning,
+                stacklevel=3,
+            )
         clean = _buyer_ocr_label_clean(raw)
         hc = _hebrew_letter_count(clean)
-        if hc > best_hc:
+        if hc > best_hc or (hc == best_hc and len(clean) > len(best_clean)):
             best_hc = hc
             best_clean = clean
-        if hc >= 2:
-            return clean
-    return best_clean
+
+    for engine in ("3", "2", "1"):
+        one_call("heb", engine)
+        if best_hc >= 2:
+            return best_clean, None
+    one_call("auto", "3")
+    if best_hc >= 2:
+        return best_clean, None
+
+    if best_hc >= 2:
+        return best_clean, None
+    if best_clean:
+        return best_clean, "ocr_space_no_hebrew"
+    if n_posts and n_http_bad == n_posts:
+        return "", "ocr_space_http_error"
+    if n_posts and n_json_bad == n_posts and not saw_nonempty_raw:
+        return "", "ocr_space_json_error"
+    return "", "ocr_space_parse_empty"
 
 
 def _detect_buyer(pdf_path: Path, pages: list[list[dict[str, Any]]]) -> str:
     """Buyer Hebrew name: OCR path only; no e-mail dictionary or local-part fallback."""
+    global _RAFAEL_LAST_OCR_PARSE_REASON
+    _RAFAEL_LAST_OCR_PARSE_REASON = None
     if not pages:
         warnings.warn(
             "Rafael buyer: PDF has no pages (cannot run buyer OCR).",
@@ -430,8 +506,10 @@ def _detect_buyer(pdf_path: Path, pages: list[list[dict[str, Any]]]) -> str:
             stacklevel=2,
         )
         return "OCR Failed"
-    clean_name = _buyer_name_from_ocr_space(pdf_path, email_w)
+    clean_name, ocr_sub = _buyer_name_from_ocr_space(pdf_path, email_w)
+    _RAFAEL_LAST_OCR_PARSE_REASON = ocr_sub
     if _hebrew_letter_count(clean_name) >= 2:
+        _RAFAEL_LAST_OCR_PARSE_REASON = None
         return clean_name
     if clean_name:
         warnings.warn(
@@ -613,6 +691,7 @@ def _detect_part_blocks(
 
 def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
     """Parse a Rafael RFQ PDF and return globals + per-part delivery list."""
+    _reset_rafael_buyer_ocr_parse_reason()
     pdf_path = Path(pdf_path)
     with pdfplumber.open(str(pdf_path)) as pdf:
         pages = [_page_clean_words(p) for p in pdf.pages]
