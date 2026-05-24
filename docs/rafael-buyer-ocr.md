@@ -4,11 +4,11 @@
 
 ב־[`api/parse_rafael_rfq.py`](../api/parse_rafael_rfq.py), השדה `buyer_name` מקבל את המחרוזת **`OCR Failed`** כש־**אין מפתח OCR.space** (`OCR_SPACE_API_KEY` ריק) או כש־`RAFAEL_BUYER_OCR` כבוי. **לא** נדרש Tesseract מקומי מאז V.5.9.
 
-כשה־API רץ אבל אחרי הניקוי יש פחות מ־2 אותיות עבריות בטווח U+05D0–U+05EA, השדה נשאר **ריק** (`""`) — לא `OCR Failed`. בתגובת `POST /api/rafael-bom` אז `buyer_ocr_ready` יכול להיות `true` ו־`buyer_ocr_reason` יסביר למשל `ocr_space_no_hebrew`, `ocr_space_parse_empty`, `ocr_space_http_error` (ראו `rafael_buyer_ocr_api_status` ב־Python).
+כשה־API רץ אבל אחרי הניקוי יש פחות מ־2 אותיות עבריות בטווח U+05D0–U+05EA, השדה נשאר **ריק** (`""`) — לא `OCR Failed`. בתגובת `POST /api/rafael-bom` אז `buyer_ocr_ready` יכול להיות `true` ו־`buyer_ocr_reason` יסביר למשל `ocr_space_no_hebrew`, `ocr_space_rate_limited` (אחרי ניסיונות חוזרים), `ocr_space_network_error`, `ocr_space_quota_exceeded` (מכסה/קרדיטים בגוף JSON), `ocr_space_parse_empty`, וכו׳ (ראו `rafael_buyer_ocr_api_status` ב־Python).
 
 ## מנוע OCR.space
 
-עברית נתמכת ב־**OCREngine 3** (לפי תיעוד OCR.space). הפרסר מנסה `language=heb` עם מנועים **3 → 2 → 1**, ואם עדיין אין מספיק עברית — ניסוי נוסף עם `language=auto` ומנוע 3.
+עברית נתמכת ב־**OCREngine 3** (לפי תיעוד OCR.space). הפרסר מנסה `language=heb` עם מנועים **3 → 2 → 1**, ואם עדיין אין מספיק עברית — ניסוי נוסף עם `language=auto` ומנוע 3. לכל שילוב שפה/מנוע יש עד **שלושה** ניסיונות HTTP עם השהיה קצרה בין ניסיונות, כולל `User-Agent` תקני, וטיפול נפרד ב־429 / 401–403 / חיבור וכו׳.
 
 ## אימות סביבה
 

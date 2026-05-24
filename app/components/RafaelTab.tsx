@@ -67,8 +67,18 @@ function rafaelBuyerDisplayLabel(
       "OCR רץ אך לא זוהו מספיק אותיות עבריות בשם הקניין (נסה תמונה/מנוע אחר או RAFAEL_OCR_DEBUG=1)",
     ocr_space_parse_empty:
       "OCR.space לא החזיר טקסט מהאזור שנחתך — בדוק את ה-PDF או את מפתח ה-API",
+    ocr_space_network_error:
+      "אין תקשורת יציבה ל-OCR.space (פסק זמן או רשת). ניסינו שלוש פעמים — נסה שוב בעוד רגע",
+    ocr_space_auth_error:
+      "מפתח OCR.space נדחה (401/403) — בדוק שהמפתח נכון ובתוקף בחשבון OCR.space",
+    ocr_space_rate_limited:
+      "הגעת למכסת בקשות ל-OCR.space (429). המערכת כבר ניסתה שוב אוטומטית — המתן דקה ונסה שוב",
+    ocr_space_payload_too_large:
+      "התמונה ל-OCR.space גדולה מדי (413) — נסה RFQ אחר או פנה לתמיכה",
+    ocr_space_quota_exceeded:
+      "נראה שנגמרו קרדיטים או מכסה ב-OCR.space — היכנס לחשבון ובדוק את התוכנית",
     ocr_space_http_error:
-      "שגיאת HTTP מול OCR.space (מכסה, חסימה, או תקלה זמנית בשרת)",
+      "תשובת שרת לא צפויה מ-OCR.space. נסה שוב; אם חוזר — RAFAEL_OCR_DEBUG=1 בשרת לפרטים",
     ocr_space_json_error:
       "תשובה לא תקינה מ-OCR.space (לא JSON) — בדוק רשת או פרוקסי",
   };

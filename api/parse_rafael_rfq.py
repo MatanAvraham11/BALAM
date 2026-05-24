@@ -51,6 +51,7 @@ import base64
 import io
 import os
 import re
+import time
 import warnings
 from datetime import date, datetime
 from pathlib import Path
@@ -405,51 +406,94 @@ def _buyer_name_from_ocr_space(
     n_http_bad = 0
     n_json_bad = 0
     saw_nonempty_raw = False
+    http_fail_statuses: list[int] = []
+    quota_api_body: list[bool] = []
     ocr_debug = os.environ.get("RAFAEL_OCR_DEBUG", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
+    from requests import exceptions as req_exc  # noqa: PLC0415
 
     def one_call(language: str, engine: str) -> None:
         nonlocal best_clean, best_hc, n_posts, n_http_bad, n_json_bad, saw_nonempty_raw
         n_posts += 1
-        try:
-            resp = requests.post(
-                _OCR_SPACE_URL,
-                data={
-                    "apikey": api_key,
-                    "language": language,
-                    "base64Image": b64,
-                    "filetype": "JPG",
-                    "isOverlayRequired": "false",
-                    "scale": "true",
-                    "OCREngine": engine,
-                },
-                timeout=90,
-            )
-        except OSError:
+        r: Any = None
+        for attempt in range(3):
+            if attempt:
+                time.sleep(0.7 * (2 ** (attempt - 1)))
+            try:
+                r = requests.post(
+                    _OCR_SPACE_URL,
+                    data={
+                        "apikey": api_key,
+                        "language": language,
+                        "base64Image": b64,
+                        "filetype": "JPG",
+                        "isOverlayRequired": "false",
+                        "scale": "true",
+                        "OCREngine": engine,
+                    },
+                    timeout=90,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (compatible; BalamRafael/1.0; "
+                            "+https://github.com/MatanAvraham11/BALAM)"
+                        ),
+                    },
+                )
+            except (req_exc.ConnectionError, req_exc.Timeout, OSError):
+                r = None
+                if attempt == 2:
+                    n_http_bad += 1
+                    http_fail_statuses.append(0)
+                    if ocr_debug:
+                        warnings.warn(
+                            f"OCR.space: connection/timeout after 3 tries "
+                            f"(lang={language} engine={engine})",
+                            UserWarning,
+                            stacklevel=3,
+                        )
+                    return
+                continue
+
+            if r.ok:
+                break
+
+            if r.status_code in (429, 502, 503, 504) and attempt < 2:
+                continue
+
             n_http_bad += 1
-            return
-        if not resp.ok:
-            n_http_bad += 1
+            http_fail_statuses.append(r.status_code)
             if ocr_debug:
                 warnings.warn(
-                    f"OCR.space HTTP {resp.status_code} for engine={engine} lang={language}",
+                    f"OCR.space HTTP {r.status_code} for engine={engine} lang={language}",
                     UserWarning,
                     stacklevel=3,
                 )
             return
+
+        assert r is not None and r.ok
         try:
-            payload = resp.json()
+            payload = r.json()
         except ValueError:
             n_json_bad += 1
             return
         raw = _ocr_space_collect_parsed_text(payload)
         if raw:
             saw_nonempty_raw = True
+        else:
+            em = str(payload.get("ErrorMessage") or "").strip().lower()
+            if em and any(
+                s in em
+                for s in (
+                    "credit", "quota", "maximum", "daily",
+                    "subscription", "not enough",
+                )
+            ):
+                quota_api_body.append(True)
         if ocr_debug and not raw:
             warnings.warn(
                 "OCR.space debug: "
-                f"status={resp.status_code} OCRExitCode={payload.get('OCRExitCode')!r} "
+                f"status={r.status_code} OCRExitCode={payload.get('OCRExitCode')!r} "
                 f"IsErrored={payload.get('IsErroredOnProcessing')!r} "
                 f"ErrorMessage={payload.get('ErrorMessage')!r}",
                 UserWarning,
@@ -473,10 +517,21 @@ def _buyer_name_from_ocr_space(
         return best_clean, None
     if best_clean:
         return best_clean, "ocr_space_no_hebrew"
-    if n_posts and n_http_bad == n_posts:
+    if n_posts and n_http_bad == n_posts and http_fail_statuses:
+        nz = [c for c in http_fail_statuses if c != 0]
+        if not nz:
+            return "", "ocr_space_network_error"
+        if all(c in (401, 403) for c in nz):
+            return "", "ocr_space_auth_error"
+        if any(c == 429 for c in nz):
+            return "", "ocr_space_rate_limited"
+        if any(c == 413 for c in nz):
+            return "", "ocr_space_payload_too_large"
         return "", "ocr_space_http_error"
     if n_posts and n_json_bad == n_posts and not saw_nonempty_raw:
         return "", "ocr_space_json_error"
+    if quota_api_body and not best_clean:
+        return "", "ocr_space_quota_exceeded"
     return "", "ocr_space_parse_empty"
 
 
