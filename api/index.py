@@ -7,7 +7,7 @@ Single FastAPI app exposing:
   GET  /api/auth
   POST /api/balam
   POST /api/drawing
-  POST /api/rafael-bom  (returns buyer_ocr_ready / buyer_ocr_reason for UI)
+  POST /api/rafael-bom  (Rafael: prefer Next proxy + optional RAFAEL_BOM_WORKER_URL; see app/api/rafael-bom)
 
 All routes are funnelled here via vercel.json rewrite.
 """
@@ -346,6 +346,7 @@ async def drawing_endpoint(request: Request, file: UploadFile) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 @app.post("/api/rafael-bom")
+@app.post("/api/internal/rafael-bom")
 async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONResponse:
     _require_auth(request)
 

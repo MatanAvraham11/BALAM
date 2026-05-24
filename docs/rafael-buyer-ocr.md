@@ -29,16 +29,22 @@
 
 ב־**Vercel Python Serverless** אין בדרך כלל Tesseract מותקן, ולכן `buyer_ocr_ready` יהיה `false` והממשק יציג הסבר (לפי `buyer_ocr_reason` מה־API).
 
-אפשרויות אמיתיות:
+**פתרון שיושם בקוד:** פריסת **worker ב־Docker** (ראו `docker/rafael-api/`) + משתנה **`RAFAEL_BOM_WORKER_URL`** ב־Vercel — ה־Next route `app/api/rafael-bom` מפנה אליו את ה־multipart (עם עוגיית ההתחברות). ללא worker, הבקשה נשלחת ל־`/api/internal/rafael-bom` (Python ב־Vercel) בלי Tesseract.
+
+אפשרויות נוספות (לא יושמו כאן):
 
 1. **Docker / image מותאם** עם `tesseract`, `tesseract-lang` (עברית), ו־`pytesseract`.
 2. **Worker נפרד** (EC2, Cloud Run, וכו') שמריץ את אותו קוד Python עם Tesseract, והלקוח שולח אליו את ה־PDF.
 3. **שירות OCR חיצוני** — העלאת תמונת הקרופ, קבלת טקסט; דורש שינוי קוד נוסף.
 
+**תוכנית מלאה וצ'קליסט:** [`plan-rafael-tesseract-production.md`](./plan-rafael-tesseract-production.md)
+
 ## קבצים רלוונטיים
 
 | קובץ | תפקיד |
 |------|--------|
+| [`app/api/rafael-bom/route.ts`](../app/api/rafael-bom/route.ts) | Proxy ל־worker או ל־Python פנימי |
+| [`docker/rafael-api/`](../docker/rafael-api/) | Docker + Fly לדוגמה |
 | [`api/parse_rafael_rfq.py`](../api/parse_rafael_rfq.py) | `_tesseract_probe`, `rafael_buyer_ocr_diagnostic`, פרסור |
 | [`api/index.py`](../api/index.py) | `POST /api/rafael-bom` — מחזיר `buyer_ocr_ready` / `buyer_ocr_reason` |
 | [`api/check_rafael_ocr_env.py`](../api/check_rafael_ocr_env.py) | סקריפט בדיקה מהירה |

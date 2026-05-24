@@ -1,0 +1,19 @@
+# העתק ל־`docker/rafael-api/fly.toml` (או שנה `app`) והרץ `fly deploy` משורש ה-repo.
+
+app = "your-rafael-api"
+primary_region = "ams"
+
+[build]
+  dockerfile = "docker/rafael-api/Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
