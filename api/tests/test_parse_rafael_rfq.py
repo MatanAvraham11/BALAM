@@ -32,6 +32,7 @@ from parse_rafael_rfq import (  # noqa: E402
     Delivery,
     PartBlock,
     RafaelRfq,
+    _buyer_ocr_label_clean,
     _classify_fai_digit,
     _format_issue_date,
     _hebrew_letter_count,
@@ -102,6 +103,22 @@ def _resolve_pdf_cases() -> list[dict]:
 
 
 _PDF_CASES = _resolve_pdf_cases()
+
+
+class BuyerOcrLabelCleanTests(unittest.TestCase):
+    """``_buyer_ocr_label_clean`` — strip ``קניין`` label and OCR junk from buyer line."""
+
+    def test_strips_hakniyi_prefix(self):
+        self.assertEqual(_buyer_ocr_label_clean("הקניי יוסי שלום"), "יוסי שלום")
+
+    def test_strips_kniyiin_prefix(self):
+        self.assertEqual(_buyer_ocr_label_clean("קניין: יוסי שלום"), "יוסי שלום")
+
+    def test_strips_double_label_token(self):
+        self.assertEqual(_buyer_ocr_label_clean("קניין הקניי דוד כהן"), "דוד כהן")
+
+    def test_does_not_strip_real_name(self):
+        self.assertEqual(_buyer_ocr_label_clean("חיים קאופמן"), "חיים קאופמן")
 
 
 class FormatIssueDateTests(unittest.TestCase):

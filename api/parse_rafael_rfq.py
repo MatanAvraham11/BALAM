@@ -17,9 +17,10 @@ Globals (page-header band, y ≲ 140 pt)
       so the row above (RFQ number) and the cell on the right (``תאריך הדפסה``) are
       excluded from OCR input. The crop is sent to **OCR.space** as **multipart**
       ``file=`` (JPEG) with ``language=heb``/``auto`` on Engine **3** then **2**
-      (``OCR_SPACE_API_KEY``). ``_buyer_ocr_label_clean`` strips label (``קניין:``),
-      separators, digits, and known header phrases (``תאריך הדפסה`` / ``הרשומים``)
-      and returns the longest Hebrew run. ``_hebrew_letter_count`` (U+05D0–U+05EA)
+      (``OCR_SPACE_API_KEY``). ``_buyer_ocr_label_clean`` strips label (``קניין:``,
+      including OCR variants like ``הקניי``), separators, digits, and known header
+      phrases (``תאריך הדפסה`` / ``הרשומים``) and returns the longest Hebrew run
+      with leading label tokens removed. ``_hebrew_letter_count`` (U+05D0–U+05EA)
       must be ≥2 or the buyer field is left empty (no e-mail map).
       There is **no** hardcoded buyer dictionary and **no** e-mail local-part
       fallback. If the anchor or OCR output is unusable (fewer than two Hebrew
@@ -321,9 +322,23 @@ def _find_buyer_email_word(
 _BUYER_OCR_JUNK_PHRASES: tuple[str, ...] = (
     "תאריך הדפסה",
     "הרשומים",
+    "הקניין",
+    "הקניי",
     "קנייה",  # common OCR misread of "קניין"
     "קניין",
+    "קניי",
 )
+
+# Leading token(s) that are only the printed label ``קניין:`` (OCR variants).
+_BUYER_LABEL_TOKEN_RE = re.compile(r"^ה?קני(ין|יה|י)?$")
+
+
+def _strip_leading_buyer_label_words(hebrew_line: str) -> str:
+    """Remove one or more leading words that are label-only (``קניין`` OCR garbage)."""
+    parts = hebrew_line.split()
+    while parts and _BUYER_LABEL_TOKEN_RE.match(parts[0]):
+        parts.pop(0)
+    return " ".join(parts).strip()
 
 
 def _buyer_ocr_label_clean(raw: str) -> str:
@@ -346,6 +361,7 @@ def _buyer_ocr_label_clean(raw: str) -> str:
     if not runs:
         return s
     best = max(runs, key=lambda t: (_hebrew_letter_count(t), len(t)))
+    best = _strip_leading_buyer_label_words(best)
     return best.strip()
 
 
