@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""V.5.7 wide buyer-line crop + OCR debug (bulletproof band above e-mail).
+"""V.5.9 wide buyer-line crop + OCR.space debug (same crop as ``parse_rafael_rfq``).
 
-Wide box: ``anchor_x0−20 … anchor_x1+150``, ``anchor_top−45 … anchor_top−15`` at **300 DPI**,
-saved as ``debug_crop.png`` (RGB). Tesseract ``heb`` ``--psm 7`` runs on a **grayscale**
-copy of the crop (same as ``parse_rafael_rfq``); strict Python
-cleaning removes ``קניין``, colons, ASCII hyphens, and newlines.
+Requires ``OCR_SPACE_API_KEY``. Saves RGB crop as ``debug_crop.png``.
 
 Usage::
 
+    export OCR_SPACE_API_KEY=...
     python3 api/test_ocr_crop.py /path/to/RFQ.pdf
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -31,9 +30,9 @@ from parse_rafael_rfq import (  # noqa: E402
     _BUYER_CROP_PAD_X0_LEFT,
     _BUYER_CROP_X1_PAD_RIGHT,
     _BUYER_OCR_DPI,
+    _buyer_name_from_ocr_space,
     _find_buyer_email_word,
     _page_clean_words,
-    _resolved_tesseract_executable,
 )
 
 _OUT_PATH = _REPO_ROOT / "debug_crop.png"
@@ -43,6 +42,9 @@ def main() -> int:
     if len(sys.argv) != 2:
         print("Usage: python3 api/test_ocr_crop.py <path-to-rfq.pdf>", file=sys.stderr)
         return 2
+    if not (os.environ.get("OCR_SPACE_API_KEY") or "").strip():
+        print("Set OCR_SPACE_API_KEY in the environment.", file=sys.stderr)
+        return 1
     pdf_path = Path(sys.argv[1]).expanduser().resolve()
     if not pdf_path.is_file():
         print(f"Not a file: {pdf_path}", file=sys.stderr)
@@ -86,43 +88,13 @@ def main() -> int:
 
     img_rgb = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     img_rgb.save(_OUT_PATH.as_posix())
-    img = img_rgb.convert("L")
-
     print(
         f"Crop (pt): x0={crop_x0:.3f} y0={crop_top:.3f} x1={crop_x1:.3f} y1={crop_bottom:.3f}  "
         f"→ {pix.width}×{pix.height}px @ {_BUYER_OCR_DPI:.0f} DPI → {_OUT_PATH}",
     )
 
-    exe = _resolved_tesseract_executable()
-    if not exe:
-        print("SKIP OCR: tesseract not found (PATH or TESSERACT_CMD)", file=sys.stderr)
-        return 0
-    try:
-        import pytesseract  # noqa: PLC0415
-
-        pytesseract.pytesseract.tesseract_cmd = exe
-    except ModuleNotFoundError:
-        print("SKIP OCR: pytesseract not installed", file=sys.stderr)
-        return 0
-    if "heb" not in pytesseract.get_languages(config=""):
-        print("SKIP OCR: tesseract lacks heb", file=sys.stderr)
-        return 0
-
-    raw_ocr = pytesseract.image_to_string(
-        img,
-        lang="heb",
-        config="--psm 7",
-    )
-    clean_name = (
-        raw_ocr.replace("קניין", "")
-        .replace(":", "")
-        .replace("-", "")
-        .replace("\n", "")
-        .strip()
-    )
-
-    print(f"RAW OCR: {repr(raw_ocr)}")
-    print(f"CLEAN NAME: '{clean_name}'")
+    clean = _buyer_name_from_ocr_space(pdf_path, anchor)
+    print("CLEAN_NAME:", repr(clean))
     return 0
 
 

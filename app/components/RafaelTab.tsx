@@ -41,15 +41,20 @@ function rafaelBuyerDisplayLabel(
   const byReason: Record<string, string> = {
     rafael_buyer_ocr_disabled:
       "OCR לשם הקניין כבוי (הסר את RAFAEL_BUYER_OCR או הגדר לערך חיובי)",
-    tesseract_not_on_path: "חסר Tesseract בשרת — אין בינארי ב-PATH",
+    ocr_space_api_key_missing:
+      "חסר מפתח OCR.space — הגדר OCR_SPACE_API_KEY בשרת (Vercel / worker)",
+    requests_import_failed:
+      "חסרה חבילת requests ב-Python (התקן requirements.txt)",
+    tesseract_not_on_path:
+      "חסר Tesseract בשרת (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
     pytesseract_import_failed:
-      "לא ניתן לטעון pytesseract או לקרוא ל-Tesseract (בדוק התקנה)",
+      "שגיאת Tesseract/pytesseract (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
     hebrew_lang_pack_missing:
-      "חסרה חבילת עברית (heb) ל-Tesseract — התקן tesseract-lang",
+      "חבילת heb ל-Tesseract (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
   };
   return (
     byReason[reason ?? ""] ??
-    "לא ניתן להריץ OCR לשם הקניין (בדוק התקנת Tesseract; ב-Vercel לרוב נדרש Docker או worker)"
+    "לא ניתן להריץ OCR לשם הקניין (בדוק OCR_SPACE_API_KEY ופריסת השרת)"
   );
 }
 

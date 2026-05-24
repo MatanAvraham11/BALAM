@@ -1,4 +1,6 @@
-# Rafael Python API — Docker (Tesseract + עברית)
+# Rafael Python API — Docker (Python + FastAPI, V.5.9+)
+
+אין צורך ב־Tesseract בקונטיינר — שם קניין Rafael משתמש ב־**OCR.space** (`OCR_SPACE_API_KEY`).
 
 בנייה מהשורש של ה-repo:
 
@@ -6,6 +8,7 @@
 docker build -f docker/rafael-api/Dockerfile -t rafael-api .
 docker run --rm -p 8080:8080 \
   -e APP_SESSION_SECRET="same-as-vercel" \
+  -e OCR_SPACE_API_KEY="your-key" \
   rafael-api
 ```
 

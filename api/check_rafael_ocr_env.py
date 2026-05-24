@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print Rafael buyer OCR environment status (Tesseract + heb + pytesseract).
+"""Print Rafael buyer OCR environment status (V.5.9: OCR.space API key).
 
 Run from repo root::
 

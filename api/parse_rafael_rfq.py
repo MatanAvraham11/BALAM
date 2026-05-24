@@ -1,5 +1,5 @@
 """
-Rafael BOM (RFQ) parser — V.5.7.
+Rafael BOM (RFQ) parser — V.5.9.
 
 Rafael RFQ PDFs are landscape A4 with a custom subset font whose CMap is
 broken for the Hebrew labels (every Hebrew glyph extracts as a
@@ -11,18 +11,17 @@ everything we need:
 Globals (page-header band, y ≲ 140 pt)
     * RFQ number      — sz=10, x≈133–163, y≈55      (also in ``FAX_INFO:…``)
     * Issue date      — sz=8,  x≈251–295, y≈85
-    * Buyer name      — **V.5.7:** deterministic OCR only: pdfplumber finds the
+    * Buyer name      — **V.5.9:** deterministic OCR only: pdfplumber finds the
       ``…@rafael.co.il`` anchor on page 1; **PyMuPDF** renders a **300 DPI** **wide**
-      clip (``x0−20 … x1+150``, ``top−45 … top−15``) above the e-mail; **Tesseract**
-      ``heb`` on a **grayscale** PIL image (**PSM 7**, then **PSM 6** if the cleaned
-      PSM 7 text has fewer than two Hebrew letters). Label noise is removed with
-      deterministic ``replace`` on ``קניין``, ``:``, ``-``, newlines (same as
-      ``api/test_ocr_crop.py``). ``_hebrew_letter_count`` (U+05D0–U+05EA) must be ≥2
+      clip (``x0−20 … x1+150``, ``top−45 … top−15``) above the e-mail; the crop is
+      sent to **OCR.space** ``/parse/image`` with ``language=heb`` (``OCR_SPACE_API_KEY``).
+      Label noise is removed with deterministic ``replace`` on ``קניין:``, ``קניין``,
+      ``:``, ``-``, newlines. ``_hebrew_letter_count`` (U+05D0–U+05EA) must be ≥2
       or the buyer field is left empty (no e-mail map).
       There is **no** hardcoded buyer dictionary and **no** e-mail local-part
-      fallback. If the anchor, Tesseract stack, or OCR output is unusable
-      (fewer than two Hebrew letters after cleaning), the buyer field is ``""``.
-      Set ``RAFAEL_BUYER_OCR=0`` to disable OCR locally (still returns ``"OCR Failed"``;
+      fallback. If the anchor or OCR output is unusable (fewer than two Hebrew
+      letters after cleaning), the buyer field is ``""``.
+      Set ``RAFAEL_BUYER_OCR=0`` to disable OCR (still returns ``"OCR Failed"``;
       the HTTP API adds ``buyer_ocr_ready`` / ``buyer_ocr_reason`` from ``rafael_buyer_ocr_diagnostic()``).
     * Buyer email     — sz=9,  x≈100–180, y≈100     (geometry anchor for OCR crop)
     * Buyer phone     — sz=9,  x≈130–180, y≈88
@@ -46,12 +45,12 @@ then globals + locals (``\u05d6\u05de\u05df \u05d0\u05e1\u05e4\u05e7\u05d4 \u05d
 
 from __future__ import annotations
 
+import base64
+import io
 import os
 import re
-import shutil
 import warnings
 from datetime import date, datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +102,7 @@ _ISSUE_DATE_Y = (80.0, 90.0)
 _EMAIL_X_MAX = 200.0
 _EMAIL_Y = (86.0, 112.0)
 
-# V.5.7 buyer-name OCR: wide band above e-mail anchor (full buyer line, no clipped ascenders).
+# V.5.9 buyer-name OCR: wide band above e-mail anchor (full buyer line, no clipped ascenders).
 _BUYER_CROP_PAD_X0_LEFT = 20.0
 _BUYER_CROP_X1_PAD_RIGHT = 150.0
 _BUYER_CROP_DELTA_TOP = 45.0
@@ -212,40 +211,16 @@ def _parse_dmy(token: str) -> date | None:
 
 
 # ---------------------------------------------------------------------------
-# V.5.7 — Buyer name: PyMuPDF geometric crop + Tesseract Hebrew (OCR-only)
+# V.5.9 — Buyer name: PyMuPDF geometric crop + OCR.space API (language=heb)
 # ---------------------------------------------------------------------------
 
-_TESSERACT_CMD_ENVS = ("TESSERACT_CMD", "RAFAEL_TESSERACT_CMD")
-# When ``shutil.which("tesseract")`` fails (narrow PATH in IDEs, some PaaS), still
-# find common Homebrew / Linux installs so OCR works if the binary exists.
-_TESSERACT_FALLBACK_PATHS = (
-    "/opt/homebrew/bin/tesseract",
-    "/usr/local/bin/tesseract",
-    "/usr/bin/tesseract",
-)
+_OCR_SPACE_URL = "https://api.ocr.space/parse/image"
+# Free OCR.space tier payload limit is ~1 MB; stay safely under.
+_OCR_SPACE_MAX_IMAGE_BYTES = 950_000
 
 
-def _resolved_tesseract_executable() -> str | None:
-    """Return an absolute path to ``tesseract``, or ``None`` if not found."""
-    for key in _TESSERACT_CMD_ENVS:
-        raw = (os.environ.get(key) or "").strip()
-        if not raw:
-            continue
-        p = Path(raw).expanduser()
-        if p.is_file() and os.access(p, os.X_OK):
-            return str(p.resolve())
-    w = shutil.which("tesseract")
-    if w:
-        return w
-    for cand in _TESSERACT_FALLBACK_PATHS:
-        p = Path(cand)
-        if p.is_file() and os.access(p, os.X_OK):
-            return str(p.resolve())
-    return None
-
-
-def _tesseract_probe() -> tuple[bool, str | None]:
-    """Return ``(ready, reason_code)`` for Tesseract + Hebrew OCR (V.5.7 buyer).
+def _rafael_buyer_ocr_probe() -> tuple[bool, str | None]:
+    """Return ``(ready, reason_code)`` for Rafael buyer OCR via OCR.space.
 
     ``reason_code`` is a stable machine string for API/UI; ``None`` when ready.
     """
@@ -253,31 +228,24 @@ def _tesseract_probe() -> tuple[bool, str | None]:
         "0", "false", "no", "off",
     ):
         return False, "rafael_buyer_ocr_disabled"
-    exe = _resolved_tesseract_executable()
-    if not exe:
-        return False, "tesseract_not_on_path"
+    if not (os.environ.get("OCR_SPACE_API_KEY") or "").strip():
+        return False, "ocr_space_api_key_missing"
     try:
-        import pytesseract as pt  # noqa: PLC0415
-
-        pt.pytesseract.tesseract_cmd = exe
-        langs = pt.get_languages(config="")
-    except Exception:
-        return False, "pytesseract_import_failed"
-    if "heb" not in langs:
-        return False, "hebrew_lang_pack_missing"
+        import requests  # noqa: PLC0415, F401
+    except ImportError:
+        return False, "requests_import_failed"
     return True, None
 
 
-@lru_cache(maxsize=1)
 def _tesseract_hebrew_ready() -> bool:
-    """True when a ``tesseract`` binary is found (PATH, env, or common paths), ``pytesseract`` works, and ``heb`` exists."""
-    ok, _reason = _tesseract_probe()
+    """Compatibility name (V.5.7): True when OCR.space buyer OCR is configured (V.5.9)."""
+    ok, _reason = _rafael_buyer_ocr_probe()
     return ok
 
 
 def rafael_buyer_ocr_diagnostic() -> dict[str, Any]:
     """Structured OCR environment status for API responses (no secrets)."""
-    ok, reason = _tesseract_probe()
+    ok, reason = _rafael_buyer_ocr_probe()
     return {"ready": ok, "reason": reason}
 
 
@@ -303,16 +271,81 @@ def _find_buyer_email_word(
     return min(pool, key=lambda w: abs(float(w["top"]) - centre))
 
 
-def _buyer_name_from_ocr_pymupdf_tesseract(
+def _buyer_ocr_label_clean(raw: str) -> str:
+    return (
+        (raw or "")
+        .replace("קניין:", "")
+        .replace("קניין", "")
+        .replace(":", "")
+        .replace("-", "")
+        .replace("\n", "")
+        .strip()
+    )
+
+
+def _pil_jpeg_bytes_under_limit(img: Image.Image, max_bytes: int = _OCR_SPACE_MAX_IMAGE_BYTES) -> bytes:
+    """Encode crop as JPEG, shrinking if needed for OCR.space free-tier size limits."""
+    rgb = img.convert("RGB")
+    w, h = rgb.size
+    for factor in (1.0, 0.85, 0.7, 0.55, 0.4, 0.3, 0.22, 0.16):
+        im = rgb if factor >= 0.999 else rgb.resize(
+            (max(8, int(w * factor)), max(8, int(h * factor))),
+            Image.Resampling.LANCZOS,
+        )
+        for quality in (92, 85, 78, 70, 62, 55):
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=quality, optimize=True)
+            data = buf.getvalue()
+            if len(data) <= max_bytes:
+                return data
+    buf = io.BytesIO()
+    rgb.resize((max(8, int(w * 0.14)), max(8, int(h * 0.14))), Image.Resampling.LANCZOS).save(
+        buf, format="JPEG", quality=60, optimize=True,
+    )
+    return buf.getvalue()
+
+
+def _ocr_space_collect_parsed_text(payload: dict[str, Any]) -> str:
+    """Join ``ParsedResults[].ParsedText`` from OCR.space JSON."""
+    if not isinstance(payload, dict):
+        return ""
+    if payload.get("IsErroredOnProcessing"):
+        return ""
+    code = payload.get("OCRExitCode")
+    if code is not None:
+        try:
+            ic = int(code)
+        except (TypeError, ValueError):
+            ic = -1
+        if ic not in (1, 2):
+            return ""
+    chunks: list[str] = []
+    for block in payload.get("ParsedResults") or []:
+        if not isinstance(block, dict):
+            continue
+        fpe = block.get("FileParseExitCode")
+        if fpe is not None:
+            try:
+                if int(fpe) < 0:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        txt = block.get("ParsedText")
+        if txt:
+            chunks.append(str(txt).strip())
+    return "\n".join(chunks).strip()
+
+
+def _buyer_name_from_ocr_space(
     pdf_path: Path,
     email_w: dict[str, Any],
 ) -> str:
-    """V.5.7 wide crop → 300 DPI pixmap → grayscale → Tesseract ``heb`` PSM 7 (+6 if weak)."""
-    import pytesseract  # noqa: PLC0415
+    """V.5.9 wide crop → 300 DPI pixmap → JPEG → OCR.space ``/parse/image`` (``language=heb``)."""
+    import requests  # noqa: PLC0415
 
-    exe = _resolved_tesseract_executable()
-    if exe:
-        pytesseract.pytesseract.tesseract_cmd = exe
+    api_key = (os.environ.get("OCR_SPACE_API_KEY") or "").strip()
+    if not api_key:
+        return ""
 
     x0 = float(email_w["x0"])
     x1 = float(email_w["x1"])
@@ -338,38 +371,39 @@ def _buyer_name_from_ocr_pymupdf_tesseract(
     finally:
         doc.close()
 
-    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L")
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    jpeg_bytes = _pil_jpeg_bytes_under_limit(img)
+    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
 
-    def _label_clean(raw: str) -> str:
-        return (
-            (raw or "")
-            .replace("קניין", "")
-            .replace(":", "")
-            .replace("-", "")
-            .replace("\n", "")
-            .strip()
-        )
-
-    try:
-        raw7 = pytesseract.image_to_string(
-            img,
-            lang="heb",
-            config="--psm 7",
-        )
-        clean7 = _label_clean(raw7)
-        if _hebrew_letter_count(clean7) >= 2:
-            return clean7
-        raw6 = pytesseract.image_to_string(
-            img,
-            lang="heb",
-            config="--psm 6 -c preserve_interword_spaces=1",
-        )
-        clean6 = _label_clean(raw6)
-        if _hebrew_letter_count(clean6) > _hebrew_letter_count(clean7):
-            return clean6
-        return clean7
-    except Exception:
-        return ""
+    best_clean = ""
+    best_hc = -1
+    for engine in ("2", "1"):
+        try:
+            resp = requests.post(
+                _OCR_SPACE_URL,
+                data={
+                    "apikey": api_key,
+                    "language": "heb",
+                    "base64Image": b64,
+                    "filetype": "JPG",
+                    "isOverlayRequired": "false",
+                    "scale": "true",
+                    "OCREngine": engine,
+                },
+                timeout=90,
+            )
+            payload = resp.json()
+        except Exception:
+            continue
+        raw = _ocr_space_collect_parsed_text(payload)
+        clean = _buyer_ocr_label_clean(raw)
+        hc = _hebrew_letter_count(clean)
+        if hc > best_hc:
+            best_hc = hc
+            best_clean = clean
+        if hc >= 2:
+            return clean
+    return best_clean
 
 
 def _detect_buyer(pdf_path: Path, pages: list[list[dict[str, Any]]]) -> str:
@@ -391,13 +425,12 @@ def _detect_buyer(pdf_path: Path, pages: list[list[dict[str, Any]]]) -> str:
         return ""
     if not _tesseract_hebrew_ready():
         warnings.warn(
-            "Rafael buyer OCR unavailable: need tesseract on PATH, Hebrew traineddata "
-            "(heb), and pytesseract. Set RAFAEL_BUYER_OCR=0 only to disable OCR locally.",
+            "Rafael buyer OCR unavailable: set OCR_SPACE_API_KEY or disable with RAFAEL_BUYER_OCR=0.",
             UserWarning,
             stacklevel=2,
         )
         return "OCR Failed"
-    clean_name = _buyer_name_from_ocr_pymupdf_tesseract(pdf_path, email_w)
+    clean_name = _buyer_name_from_ocr_space(pdf_path, email_w)
     if _hebrew_letter_count(clean_name) >= 2:
         return clean_name
     if clean_name:

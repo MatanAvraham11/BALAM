@@ -202,7 +202,7 @@ class FlattenAndWriteTests(unittest.TestCase):
 
 
 class BuyerOcrDiagnosticTests(unittest.TestCase):
-    def test_shape_matches_tesseract_ready(self):
+    def test_shape_matches_ocr_space_ready(self):
         d = rafael_buyer_ocr_diagnostic()
         self.assertIsInstance(d, dict)
         self.assertIn("ready", d)
@@ -217,9 +217,8 @@ class BuyerOcrDiagnosticTests(unittest.TestCase):
                 d["reason"],
                 (
                     "rafael_buyer_ocr_disabled",
-                    "tesseract_not_on_path",
-                    "pytesseract_import_failed",
-                    "hebrew_lang_pack_missing",
+                    "ocr_space_api_key_missing",
+                    "requests_import_failed",
                 ),
             )
 
@@ -248,7 +247,7 @@ class PdfSmokeTests(unittest.TestCase):
                     self.assertEqual(
                         rfq.buyer_name,
                         "OCR Failed",
-                        "without tesseract+heb+pytesseract buyer must not be guessed",
+                        "without OCR_SPACE_API_KEY buyer must not be guessed",
                     )
                 self.assertIsNotNone(_parse_dmy(rfq.submission_date))
                 self.assertEqual(len(rfq.parts), case["parts"])
