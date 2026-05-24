@@ -22,7 +22,8 @@ Globals (page-header band, y ≲ 140 pt)
       There is **no** hardcoded buyer dictionary and **no** e-mail local-part
       fallback. If the anchor, Tesseract stack, or OCR output is unusable
       (fewer than two Hebrew letters after cleaning), the buyer field is ``""``.
-      Set ``RAFAEL_BUYER_OCR=0`` to disable OCR locally (still returns ``"OCR Failed"`` with a warning).
+      Set ``RAFAEL_BUYER_OCR=0`` to disable OCR locally (still returns ``"OCR Failed"``;
+      the HTTP API adds ``buyer_ocr_ready`` / ``buyer_ocr_reason`` from ``rafael_buyer_ocr_diagnostic()``).
     * Buyer email     — sz=9,  x≈100–180, y≈100     (geometry anchor for OCR crop)
     * Buyer phone     — sz=9,  x≈130–180, y≈88
     * Submission date — first ``dd/mm/yyyy`` found in ``extract_text()`` in page order
@@ -215,22 +216,39 @@ def _parse_dmy(token: str) -> date | None:
 # ---------------------------------------------------------------------------
 
 
-@lru_cache(maxsize=1)
-def _tesseract_hebrew_ready() -> bool:
-    """True when ``tesseract`` is on PATH, ``pytesseract`` importable, and ``heb`` exists."""
+def _tesseract_probe() -> tuple[bool, str | None]:
+    """Return ``(ready, reason_code)`` for Tesseract + Hebrew OCR (V.5.7 buyer).
+
+    ``reason_code`` is a stable machine string for API/UI; ``None`` when ready.
+    """
     if os.environ.get("RAFAEL_BUYER_OCR", "").strip().lower() in (
         "0", "false", "no", "off",
     ):
-        return False
+        return False, "rafael_buyer_ocr_disabled"
     if not shutil.which("tesseract"):
-        return False
+        return False, "tesseract_not_on_path"
     try:
         import pytesseract as pt  # noqa: PLC0415
 
         langs = pt.get_languages(config="")
     except Exception:
-        return False
-    return "heb" in langs
+        return False, "pytesseract_import_failed"
+    if "heb" not in langs:
+        return False, "hebrew_lang_pack_missing"
+    return True, None
+
+
+@lru_cache(maxsize=1)
+def _tesseract_hebrew_ready() -> bool:
+    """True when ``tesseract`` is on PATH, ``pytesseract`` importable, and ``heb`` exists."""
+    ok, _reason = _tesseract_probe()
+    return ok
+
+
+def rafael_buyer_ocr_diagnostic() -> dict[str, Any]:
+    """Structured OCR environment status for API responses (no secrets)."""
+    ok, reason = _tesseract_probe()
+    return {"ready": ok, "reason": reason}
 
 
 def _find_buyer_email_word(

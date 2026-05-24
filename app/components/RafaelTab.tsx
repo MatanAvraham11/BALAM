@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import FileDropzone from "./FileDropzone";
 import InfoCard from "./InfoCard";
 import DataTable from "./DataTable";
@@ -23,10 +23,35 @@ type RafaelResponse = {
   rfq_number: string;
   buyer_name: string;
   submission_date: string;
+  buyer_ocr_ready?: boolean;
+  buyer_ocr_reason?: string | null;
   rows: RafaelRow[];
   txt_base64: string;
   txt_filename: string;
 };
+
+/** Human-readable Hebrew when the API returns the sentinel ``OCR Failed`` (infra / env). */
+function rafaelBuyerDisplayLabel(
+  buyerName: string,
+  reason: string | null | undefined,
+): string {
+  if (buyerName !== "OCR Failed") {
+    return buyerName.trim() ? buyerName : "—";
+  }
+  const byReason: Record<string, string> = {
+    rafael_buyer_ocr_disabled:
+      "OCR לשם הקניין כבוי (הסר את RAFAEL_BUYER_OCR או הגדר לערך חיובי)",
+    tesseract_not_on_path: "חסר Tesseract בשרת — אין בינארי ב-PATH",
+    pytesseract_import_failed:
+      "לא ניתן לטעון pytesseract או לקרוא ל-Tesseract (בדוק התקנה)",
+    hebrew_lang_pack_missing:
+      "חסרה חבילת עברית (heb) ל-Tesseract — התקן tesseract-lang",
+  };
+  return (
+    byReason[reason ?? ""] ??
+    "לא ניתן להריץ OCR לשם הקניין (בדוק התקנת Tesseract; ב-Vercel לרוב נדרש Docker או worker)"
+  );
+}
 
 const COLUMNS = [
   "מספר שורה",
@@ -104,6 +129,25 @@ export default function RafaelTab() {
 
   const showNewRun = Boolean(data || error || success);
 
+  const buyerDisplay = useMemo(() => {
+    if (!data) return "—";
+    return rafaelBuyerDisplayLabel(data.buyer_name, data.buyer_ocr_reason);
+  }, [data]);
+
+  const tableRows = useMemo(() => {
+    if (!data) return [];
+    const label = rafaelBuyerDisplayLabel(
+      data.buyer_name,
+      data.buyer_ocr_reason,
+    );
+    if (data.buyer_name !== "OCR Failed") return data.rows;
+    return data.rows.map((row) =>
+      row["שם קניין"] === "OCR Failed"
+        ? { ...row, "שם קניין": label }
+        : row,
+    );
+  }, [data]);
+
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-gray-700">
@@ -159,7 +203,7 @@ export default function RafaelTab() {
           <InfoCard
             items={[
               { label: "מספר בלם", value: data.rfq_number },
-              { label: "שם קניין", value: data.buyer_name || "—" },
+              { label: "שם קניין", value: buyerDisplay },
               { label: "תאריך סופי להגשה", value: data.submission_date || "—" },
             ]}
           />
@@ -168,12 +212,13 @@ export default function RafaelTab() {
             שורות אספקה
           </div>
           <button
+            type="button"
             onClick={handleDownloadTxt}
             className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
           >
             הורד קובץ TXT (מופרד בטאב · Excel)
           </button>
-          <DataTable columns={COLUMNS} rows={data.rows} />
+          <DataTable columns={COLUMNS} rows={tableRows} />
         </>
       )}
     </div>

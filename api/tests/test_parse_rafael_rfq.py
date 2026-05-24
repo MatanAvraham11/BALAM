@@ -39,6 +39,7 @@ from parse_rafael_rfq import (  # noqa: E402
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
+    rafael_buyer_ocr_diagnostic,
 )
 
 _FIXTURE_ROOT = Path(
@@ -198,6 +199,29 @@ class FlattenAndWriteTests(unittest.TestCase):
         self.assertEqual(len(body.split("\r\n")), 5)
         for line in body.rstrip("\r\n").split("\r\n"):
             self.assertEqual(line.count("\t"), len(RAFAEL_TXT_COLUMNS) - 1)
+
+
+class BuyerOcrDiagnosticTests(unittest.TestCase):
+    def test_shape_matches_tesseract_ready(self):
+        d = rafael_buyer_ocr_diagnostic()
+        self.assertIsInstance(d, dict)
+        self.assertIn("ready", d)
+        self.assertIn("reason", d)
+        self.assertIsInstance(d["ready"], bool)
+        self.assertEqual(d["ready"], _tesseract_hebrew_ready())
+        if d["ready"]:
+            self.assertIsNone(d["reason"])
+        else:
+            self.assertIsInstance(d["reason"], str)
+            self.assertIn(
+                d["reason"],
+                (
+                    "rafael_buyer_ocr_disabled",
+                    "tesseract_not_on_path",
+                    "pytesseract_import_failed",
+                    "hebrew_lang_pack_missing",
+                ),
+            )
 
 
 class PdfSmokeTests(unittest.TestCase):

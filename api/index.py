@@ -7,7 +7,7 @@ Single FastAPI app exposing:
   GET  /api/auth
   POST /api/balam
   POST /api/drawing
-  POST /api/rafael-bom
+  POST /api/rafael-bom  (returns buyer_ocr_ready / buyer_ocr_reason for UI)
 
 All routes are funnelled here via vercel.json rewrite.
 """
@@ -50,6 +50,7 @@ from parse_rafael_rfq import (
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
+    rafael_buyer_ocr_diagnostic,
 )
 
 app = FastAPI()
@@ -363,10 +364,14 @@ async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONRespons
         tsv_body = format_rafael_tsv_body(rows)
         txt_bytes = tsv_body.encode("windows-1255", errors="replace")
 
+        ocr_diag = rafael_buyer_ocr_diagnostic()
+
         return JSONResponse(content={
             "rfq_number": rfq.rfq_number,
             "buyer_name": rfq.buyer_name,
             "submission_date": rfq.submission_date,
+            "buyer_ocr_ready": ocr_diag["ready"],
+            "buyer_ocr_reason": ocr_diag["reason"],
             "rows": rows,
             "txt_base64": base64.b64encode(txt_bytes).decode(),
             "txt_filename": txt_basename,
