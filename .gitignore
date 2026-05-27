@@ -27,3 +27,4 @@ Thumbs.db
 
 # OCR debug output (local)
 debug_crop.png
+debug_crops/

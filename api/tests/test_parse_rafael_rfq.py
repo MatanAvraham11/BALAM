@@ -106,35 +106,36 @@ _PDF_CASES = _resolve_pdf_cases()
 
 
 class BuyerOcrLabelCleanTests(unittest.TestCase):
-    """``_buyer_ocr_label_clean`` — strip ``קניין`` label and OCR junk from buyer line."""
+    """``_buyer_ocr_label_clean`` — minimal cleaner used after the SURGICAL crop.
 
-    def test_strips_hakniyi_prefix(self):
-        self.assertEqual(_buyer_ocr_label_clean("הקניי יוסי שלום"), "יוסי שלום")
+    Since the crop now contains ONLY the buyer-name glyphs (no ``קניין:`` label,
+    no neighbor cells), the cleaner's job is just to normalise: drop non-Hebrew
+    characters, collapse whitespace, pick the longest Hebrew run, and drop
+    residual 1-letter edge tokens. Tests cover the surviving responsibilities.
+    """
 
-    def test_strips_kniyiin_prefix(self):
-        self.assertEqual(_buyer_ocr_label_clean("קניין: יוסי שלום"), "יוסי שלום")
-
-    def test_strips_double_label_token(self):
-        self.assertEqual(_buyer_ocr_label_clean("קניין הקניי דוד כהן"), "דוד כהן")
-
-    def test_does_not_strip_real_name(self):
+    def test_passes_clean_name_unchanged(self):
         self.assertEqual(_buyer_ocr_label_clean("חיים קאופמן"), "חיים קאופמן")
+        self.assertEqual(_buyer_ocr_label_clean("יוסי שלום"), "יוסי שלום")
+        self.assertEqual(_buyer_ocr_label_clean("שירן סורני שלאם"), "שירן סורני שלאם")
 
-    def test_strips_single_letter_prefix(self):
-        # OCR bleed from the adjacent "תאריך" cell (final "ך" leaks into the crop).
-        self.assertEqual(_buyer_ocr_label_clean("ך חיים קאופמן"), "חיים קאופמן")
+    def test_drops_stray_punctuation_and_digits(self):
+        # OCR sometimes emits stray ASCII / digits even with a clean crop.
+        self.assertEqual(_buyer_ocr_label_clean("חיים קאופמן 17"), "חיים קאופמן")
+        self.assertEqual(_buyer_ocr_label_clean("|חיים קאופמן|"), "חיים קאופמן")
 
-    def test_strips_single_letter_he_prefix(self):
-        # Stray "ה" leaked from header text — must not become part of the name.
+    def test_collapses_whitespace_and_newlines(self):
         self.assertEqual(
-            _buyer_ocr_label_clean("ה שירן סורני שלאם"), "שירן סורני שלאם"
+            _buyer_ocr_label_clean("חיים   קאופמן\n\n"), "חיים קאופמן"
         )
 
-    def test_strips_single_letter_suffix(self):
+    def test_strips_single_letter_edge_tokens(self):
+        # Residual 1-letter Hebrew "words" at the edges are OCR noise.
+        self.assertEqual(_buyer_ocr_label_clean("ך חיים קאופמן"), "חיים קאופמן")
         self.assertEqual(_buyer_ocr_label_clean("דוד כהן ך"), "דוד כהן")
 
     def test_keeps_two_letter_name_components(self):
-        # Real 2-letter Hebrew components like בן/בר/אל must NOT be stripped.
+        # Real 2-letter Hebrew name components (בן / בר / אל) must NOT be stripped.
         self.assertEqual(_buyer_ocr_label_clean("בן דוד"), "בן דוד")
         self.assertEqual(_buyer_ocr_label_clean("דוד בר אל"), "דוד בר אל")
 

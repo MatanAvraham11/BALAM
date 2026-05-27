@@ -12,16 +12,19 @@ Globals (page-header band, y ≲ 140 pt)
     * RFQ number      — sz=10, x≈133–163, y≈55      (also in ``FAX_INFO:…``)
     * Issue date      — sz=8,  x≈251–295, y≈85
     * Buyer name      — **V.5.9:** deterministic OCR only: pdfplumber finds the
-      ``…@rafael.co.il`` anchor on page 1; **PyMuPDF** renders a **300 DPI** **tight**
-      clip (``x0−12 … x1+60``, ``top−28 … top−13``) framing only the buyer-name row
-      so the row above (RFQ number) and the cell on the right (``תאריך הדפסה``) are
-      excluded from OCR input. The crop is sent to **OCR.space** as **multipart**
+      ``…@rafael.co.il`` anchor on page 1; **PyMuPDF** renders a **300 DPI**
+      **surgical** clip (``x0−15 … x1+2``, ``top−27 … top−13``) that frames ONLY
+      the buyer-name glyphs. The crop is calibrated against PUA glyph positions:
+      buyer-name characters live at ``x≈115–180pt`` while the ``קניין:`` label
+      sits at ``x≈189–206pt``; ``clip_x1 = email.x1 + 2`` cuts cleanly between
+      them. The neighbour cells (``תאריך הדפסה`` above, phone row below) are
+      excluded by the y-band. The crop is sent to **OCR.space** as **multipart**
       ``file=`` (JPEG) with ``language=heb``/``auto`` on Engine **3** then **2**
-      (``OCR_SPACE_API_KEY``). ``_buyer_ocr_label_clean`` strips label (``קניין:``,
-      including OCR variants like ``הקניי``), separators, digits, and known header
-      phrases (``תאריך הדפסה`` / ``הרשומים``) and returns the longest Hebrew run
-      with leading label tokens removed. ``_hebrew_letter_count`` (U+05D0–U+05EA)
-      must be ≥2 or the buyer field is left empty (no e-mail map).
+      (``OCR_SPACE_API_KEY``). Because the OCR now receives a pure-name image,
+      ``_buyer_ocr_label_clean`` is minimal: strip non-Hebrew chars, collapse
+      whitespace, take the longest Hebrew run, and drop 1-letter edge tokens
+      (residual noise). ``_hebrew_letter_count`` (U+05D0–U+05EA) must be ≥2 or
+      the buyer field is left empty (no e-mail map).
       There is **no** hardcoded buyer dictionary and **no** e-mail local-part
       fallback. If the anchor or OCR output is unusable (fewer than two Hebrew
       letters after cleaning), the buyer field is ``""``.
@@ -29,6 +32,8 @@ Globals (page-header band, y ≲ 140 pt)
       the HTTP API adds ``buyer_ocr_ready`` / ``buyer_ocr_reason`` from
       ``rafael_buyer_ocr_api_status()`` (env probe plus parse-time codes such as
       ``ocr_space_no_hebrew`` when the key is set but OCR text is too weak).
+      Set ``RAFAEL_OCR_DEBUG=1`` to write the exact crop sent to OCR.space to
+      ``debug_crop.png`` (override path with ``RAFAEL_OCR_DEBUG_PATH``).
     * Buyer email     — sz=9,  x≈100–180, y≈100     (geometry anchor for OCR crop)
     * Buyer phone     — sz=9,  x≈130–180, y≈88
     * Submission date — first ``dd/mm/yyyy`` found in ``extract_text()`` in page order
@@ -108,15 +113,26 @@ _ISSUE_DATE_Y = (80.0, 90.0)
 _EMAIL_X_MAX = 200.0
 _EMAIL_Y = (86.0, 112.0)
 
-# V.5.9 buyer-name OCR: tight band above e-mail anchor.
-# Cropped to ONLY the buyer-name row (no "תאריך הדפסה" cell, no row above).
-# x0 extends slightly left of the e-mail x0 to catch long Hebrew names; x1 extends
-# just past the e-mail x1 so the "תאריך הדפסה:" cell to the right is excluded.
-# Vertically: DELTA_TOP/DELTA_BOTTOM frame the single buyer row above the e-mail.
-_BUYER_CROP_PAD_X0_LEFT = 12.0
-_BUYER_CROP_X1_PAD_RIGHT = 40.0  # narrower to avoid bleeding the "תאריך הדפסה" cell
-_BUYER_CROP_DELTA_TOP = 26.0
-_BUYER_CROP_DELTA_BOTTOM = 14.0
+# V.5.9 buyer-name OCR — SURGICAL crop (calibrated against 3 reference Rafael RFQs).
+# Goal: feed OCR.space ONLY the buyer-name glyphs — no "קניין:" label, no neighbor
+# cells (date/phone), no borders. With a pure-name image we can drop all of the
+# label-stripping junk-phrase regex.
+#
+# Calibration (PUA glyph positions from pdfplumber on 3 PDFs):
+#   - Buyer-name characters span x ≈ 115–180pt (longest name "שירן סורני שלאם").
+#   - "קניין:" label characters span x ≈ 189–206pt (consistent across PDFs).
+#   - Email anchor: x0 ≈ 100–104, x1 ≈ 180.7–180.8, top ≈ 100.3.
+#   - Buyer-name row Hebrew glyphs centred at top ≈ 82.9 (band ≈ 78–87pt).
+#
+# Crop coordinates (relative to email anchor `e`):
+#   clip_x0 = e.x0 - 15      → ≈ 85–89pt (leftmost name char ~115; safe margin)
+#   clip_x1 = e.x1 + 2       → ≈ 183pt   (right of name end 176pt, LEFT of label start 189pt)
+#   clip_y0 = e.top - 27     → ≈ 73pt    (+5pt headroom above name glyphs at top≈83)
+#   clip_y1 = e.top - 13     → ≈ 87pt    (above phone row at top=88)
+_BUYER_CROP_PAD_X0_LEFT = 15.0
+_BUYER_CROP_X1_PAD_RIGHT = 2.0
+_BUYER_CROP_DELTA_TOP = 27.0
+_BUYER_CROP_DELTA_BOTTOM = 13.0
 _BUYER_OCR_DPI = 300.0
 
 # Per-row column x-bands
@@ -319,35 +335,13 @@ def _find_buyer_email_word(
     return min(pool, key=lambda w: abs(float(w["top"]) - centre))
 
 
-_BUYER_OCR_JUNK_PHRASES: tuple[str, ...] = (
-    "תאריך הדפסה",
-    "הרשומים",
-    "הקניין",
-    "הקניי",
-    "קנייה",  # common OCR misread of "קניין"
-    "קניין",
-    "קניי",
-)
-
-# Leading token(s) that are only the printed label ``קניין:`` (OCR variants).
-_BUYER_LABEL_TOKEN_RE = re.compile(r"^ה?קני(ין|יה|י)?$")
-
-
-def _strip_leading_buyer_label_words(hebrew_line: str) -> str:
-    """Remove one or more leading words that are label-only (``קניין`` OCR garbage)."""
-    parts = hebrew_line.split()
-    while parts and _BUYER_LABEL_TOKEN_RE.match(parts[0]):
-        parts.pop(0)
-    return " ".join(parts).strip()
-
-
 def _strip_short_edge_tokens(hebrew_line: str) -> str:
     """Drop single-letter Hebrew "words" at the start/end of the buyer line.
 
     Real Hebrew names always have ≥2 letters per component (e.g. ``בן``, ``בר``,
-    ``אל``); standalone one-letter tokens are almost always OCR bleed from the
-    adjacent ``תאריך הדפסה`` cell or border noise (e.g. final ``ך`` from ``תאריך``,
-    stray ``ה`` from ``הדפסה``). Stripping only one-letter words is safe.
+    ``אל``); standalone one-letter tokens at the edge are residual OCR noise
+    (e.g. a stray glyph from a cell border, or a soft hyphen). Stripping only
+    one-letter words at the edges is safe.
     """
     parts = hebrew_line.split()
     while parts and len(parts[0]) == 1:
@@ -358,17 +352,15 @@ def _strip_short_edge_tokens(hebrew_line: str) -> str:
 
 
 def _buyer_ocr_label_clean(raw: str) -> str:
-    """Strip label / separators / header phrases / digits; keep best Hebrew run.
+    """Normalize OCR output of the surgical buyer-name crop.
 
-    The crop is now tight to the buyer-name row, but in case OCR still pulls in
-    adjacent header text we defensively remove known junk and extract the longest
-    Hebrew-only span (U+0590–U+05FF) from what remains.
+    Since V.5.9 the crop is surgically calibrated to contain ONLY the buyer-name
+    glyphs (no ``קניין:`` label, no neighbor cells), so cleaning is now minimal:
+    drop non-Hebrew characters (stray punctuation, soft hyphens, digit artefacts),
+    collapse whitespace, take the longest Hebrew-only span (defensive guard
+    against single rogue characters), and strip 1-letter tokens at the edges.
     """
     s = (raw or "").replace("\n", " ").replace("\r", " ")
-    s = s.replace(":", " ").replace("|", " ")
-    for phrase in _BUYER_OCR_JUNK_PHRASES:
-        s = s.replace(phrase, " ")
-    s = re.sub(r"\d+", " ", s)
     s = re.sub(r"[^\u0590-\u05FF\s]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     if not s:
@@ -377,7 +369,6 @@ def _buyer_ocr_label_clean(raw: str) -> str:
     if not runs:
         return s
     best = max(runs, key=lambda t: (_hebrew_letter_count(t), len(t)))
-    best = _strip_leading_buyer_label_words(best)
     best = _strip_short_edge_tokens(best)
     return best.strip()
 
@@ -473,6 +464,26 @@ def _buyer_name_from_ocr_space(
         doc.close()
 
     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+    if os.environ.get("RAFAEL_OCR_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
+        # Persist the exact image sent to OCR.space so a human can visually verify
+        # that the surgical crop excludes the "קניין:" label and neighbor cells.
+        debug_path = Path(os.environ.get("RAFAEL_OCR_DEBUG_PATH") or "debug_crop.png")
+        try:
+            img.save(debug_path)
+            warnings.warn(
+                f"Rafael buyer OCR: debug crop saved to {debug_path} "
+                f"(rect={clip_x0:.1f},{clip_y0:.1f},{clip_x1:.1f},{clip_y1:.1f}).",
+                UserWarning,
+                stacklevel=2,
+            )
+        except OSError as exc:
+            warnings.warn(
+                f"Rafael buyer OCR: failed to save debug_crop.png: {exc}",
+                UserWarning,
+                stacklevel=2,
+            )
+
     jpeg_bytes = _pil_jpeg_bytes_under_limit(img)
 
     best_clean = ""
