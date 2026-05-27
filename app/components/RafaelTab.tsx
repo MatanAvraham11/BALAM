@@ -33,6 +33,21 @@ type RafaelResponse = {
   txt_filename: string;
 };
 
+type PlrRow = {
+  row_number: number;
+  operation_sequence: string;
+  component_item: string;
+};
+
+type ZipResponse = {
+  rows: PlrRow[];
+  matched_file_count: number;
+  total_file_count: number;
+  warnings: string[];
+};
+
+const PLR_COLUMNS = ["#", "Operation Sequence", "Component Item"];
+
 /** Human-readable Hebrew for buyer field: success, infra failure, or weak OCR. */
 function rafaelBuyerDisplayLabel(
   buyerName: string,
@@ -125,11 +140,33 @@ export default function RafaelTab() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // ZIP state
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [zipLoading, setZipLoading] = useState(false);
+  const [zipData, setZipData] = useState<ZipResponse | null>(null);
+  const [zipError, setZipError] = useState<string | null>(null);
+
+  /** First rafael part number from the PDF result — used as the sort key for PLR files. */
+  const parentPn = useMemo(() => {
+    const first = data?.rows?.[0]?.["מקט רפאל"];
+    return (first || "").trim();
+  }, [data]);
+
   function handleFile(f: File | null) {
     setFile(f);
     setData(null);
     setError(null);
     setSuccess(null);
+    // Reset ZIP data when a new PDF is chosen
+    setZipFile(null);
+    setZipData(null);
+    setZipError(null);
+  }
+
+  function handleZipFile(f: File | null) {
+    setZipFile(f);
+    setZipData(null);
+    setZipError(null);
   }
 
   async function handleExtract() {
@@ -174,11 +211,44 @@ export default function RafaelTab() {
     );
   }
 
+  async function handleZipExtract() {
+    if (!zipFile) return;
+    setZipLoading(true);
+    setZipError(null);
+    setZipData(null);
+
+    try {
+      const fd = new FormData();
+      fd.append("file", zipFile);
+      fd.append("parent_part_number", parentPn);
+      const res = await fetch("/api/rafael-zip", { method: "POST", body: fd });
+      const json = await res.json();
+      if (!res.ok) {
+        const detail =
+          typeof json?.error === "string"
+            ? json.error
+            : typeof json?.detail === "string"
+              ? json.detail
+              : "שגיאה בפענוח ה-ZIP";
+        setZipError(detail);
+        return;
+      }
+      setZipData(json as ZipResponse);
+    } catch {
+      setZipError("שגיאה בתקשורת עם השרת בעת עיבוד ה-ZIP");
+    } finally {
+      setZipLoading(false);
+    }
+  }
+
   function handleNewRun() {
     setFile(null);
     setData(null);
     setError(null);
     setSuccess(null);
+    setZipFile(null);
+    setZipData(null);
+    setZipError(null);
   }
 
   const showNewRun = Boolean(data || error || success);
@@ -280,6 +350,91 @@ export default function RafaelTab() {
             הורד קובץ TXT (מופרד בטאב · Excel)
           </button>
           <DataTable columns={COLUMNS} rows={tableRows} />
+
+          {/* ── ZIP / PLR section ─────────────────────────────── */}
+          <div className="mt-6 border-t border-gray-200 pt-4 flex flex-col gap-4">
+            <div className="text-base font-bold text-nativ-dark">
+              נתוני ייצור (ZIP)
+            </div>
+            <p className="text-sm text-gray-600">
+              גרור לכאן את קובץ ה-ZIP עם נתוני הייצור (TransferRequest_*.zip או *_PRODUCT.ZIP) כדי לחלץ את רשימת הרכיבים.
+              {parentPn ? (
+                <span className="mr-1 font-medium text-nativ-dark">
+                  מק״ט הורה: {parentPn}
+                </span>
+              ) : null}
+            </p>
+
+            <FileDropzone
+              label="גרור לכאן ZIP של נתוני ייצור או לחץ לבחירה"
+              file={zipFile}
+              onFile={handleZipFile}
+              onError={(msg) => setZipError(msg)}
+              disabled={zipLoading}
+            />
+
+            {zipFile && (
+              <button
+                type="button"
+                onClick={handleZipExtract}
+                disabled={zipLoading}
+                className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {zipLoading ? "מעבד ZIP..." : "חלץ נתוני ייצור"}
+              </button>
+            )}
+
+            {zipLoading && (
+              <div className="text-sm text-gray-500 animate-pulse">מעבד קובץ ZIP...</div>
+            )}
+
+            {zipError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
+                שגיאה בפענוח ה-ZIP: {zipError}
+              </div>
+            )}
+
+            {zipData && (
+              <>
+                <div className="flex items-center gap-3 text-sm text-gray-600">
+                  <span>
+                    נמצאו{" "}
+                    <span className="font-semibold text-nativ-dark">
+                      {zipData.rows.length}
+                    </span>{" "}
+                    שורות מתוך{" "}
+                    <span className="font-semibold">{zipData.total_file_count}</span>{" "}
+                    קבצי PLR
+                    {zipData.matched_file_count > 0 && (
+                      <span className="text-green-700">
+                        {" "}({zipData.matched_file_count} תואמים למק״ט הורה)
+                      </span>
+                    )}
+                  </span>
+                </div>
+
+                {zipData.warnings.length > 0 && (
+                  <div className="rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-2.5 text-sm text-yellow-800">
+                    <div className="font-semibold mb-1">אזהרות:</div>
+                    <ul className="list-disc list-inside space-y-0.5">
+                      {zipData.warnings.map((w, i) => (
+                        <li key={i}>{w}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <DataTable
+                  columns={PLR_COLUMNS}
+                  rows={zipData.rows.map((r) => ({
+                    "#": r.row_number,
+                    "Operation Sequence": r.operation_sequence,
+                    "Component Item": r.component_item,
+                  }))}
+                />
+              </>
+            )}
+          </div>
         </>
       )}
     </div>

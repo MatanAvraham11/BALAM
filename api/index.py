@@ -33,7 +33,7 @@ if _API_DIR not in sys.path:
 import eval_type_backport  # noqa: F401  # Pydantic needs this on Py<3.10 for PEP604 unions in parsers
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -45,6 +45,7 @@ from parse_balam import (
     revision_for_export,
 )
 from fai_parser import items_to_csv, run_fai
+from parse_rafael_plr_zip import extract_plr_rows_from_zip
 from parse_rafael_rfq import (
     RafaelRfq,
     flatten_rafael_to_rows,
@@ -383,3 +384,53 @@ async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONRespons
         return JSONResponse(content=body)
     finally:
         os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/rafael-zip
+# ---------------------------------------------------------------------------
+
+@app.post("/api/rafael-zip")
+@app.post("/api/internal/rafael-zip")
+async def rafael_zip_endpoint(
+    request: Request,
+    file: UploadFile,
+    parent_part_number: str = Form(""),
+) -> JSONResponse:
+    """Extract PLR rows from a Rafael manufacturing transfer ZIP.
+
+    Accepts:
+        file              – multipart/form-data: the ZIP file bytes.
+        parent_part_number – string form field: first rafael_pn from the RFQ PDF.
+
+    Returns JSON::
+
+        {
+          "rows": [{"row_number": 1, "operation_sequence": "...", "component_item": "..."}, …],
+          "matched_file_count": N,
+          "total_file_count": M,
+          "warnings": ["…"]
+        }
+    """
+    _require_auth(request)
+
+    zip_bytes = await file.read()
+    if not zip_bytes:
+        raise HTTPException(status_code=400, detail="קובץ ZIP ריק.")
+
+    result = extract_plr_rows_from_zip(zip_bytes, (parent_part_number or "").strip())
+
+    # If the parser could not open the ZIP at all, return 400
+    if (
+        not result["rows"]
+        and result["total_file_count"] == 0
+        and result["warnings"]
+        and any(
+            kw in w
+            for w in result["warnings"]
+            for kw in ("לא ניתן לפתוח", "ZIP פגום", "BadZipFile")
+        )
+    ):
+        raise HTTPException(status_code=400, detail=result["warnings"][0])
+
+    return JSONResponse(content=result)
