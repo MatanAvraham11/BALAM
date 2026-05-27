@@ -12,6 +12,8 @@
 
 **שינוי חשוב:** השליחה היא **multipart `file=`** (לא `base64Image`). שליחת `base64Image` בלי הקידומת `data:image/jpeg;base64,` גורמת ל-OCR.space להחזיר HTTP 400 ("Not a valid base64 image"). multipart גם חוסך ~33% נפח על החוט.
 
+**V.6.0:** ב־`parse_rafael_rfq` נטען עמוד 1 פעם אחת ב־PyMuPDF, מרונדרים קרופ קניין + קרופ תאריך הגשה, ואז נשלחים ל־OCR.space (פחות פתיחות כפולות של אותו PDF). אם הקניין נכשל ב־`ocr_space_parse_empty` או `ocr_space_network_error`, מתבצע **ניסיון OCR חוזר אחד** לאחר השהיה קצרה.
+
 ## אימות סביבה
 
 1. **`OCR_SPACE_API_KEY`** — חובה בפריסת **Python** (Vercel env לפונקציית השרת / worker). הגדרה רק ב־Next (`.env.local`) לא מספיקה אם הפרסור רץ ב־Python נפרד.

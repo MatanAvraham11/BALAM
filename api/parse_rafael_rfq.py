@@ -459,6 +459,18 @@ def _ocr_space_collect_parsed_text(payload: dict[str, Any]) -> str:
     return "\n".join(chunks).strip()
 
 
+def _buyer_crop_rect_from_email(email_w: dict[str, Any]) -> fitz.Rect:
+    """PDF-space rectangle for the V.5.9 buyer-name surgical crop (from e-mail anchor)."""
+    x0 = float(email_w["x0"])
+    x1 = float(email_w["x1"])
+    etop = float(email_w["top"])
+    clip_x0 = max(0.0, x0 - _BUYER_CROP_PAD_X0_LEFT)
+    clip_x1 = x1 + _BUYER_CROP_X1_PAD_RIGHT
+    clip_y0 = etop - _BUYER_CROP_DELTA_TOP
+    clip_y1 = etop - _BUYER_CROP_DELTA_BOTTOM
+    return fitz.Rect(clip_x0, clip_y0, clip_x1, clip_y1)
+
+
 def _submission_due_surgical_rect_from_email(email_w: dict[str, Any]) -> fitz.Rect:
     """Return PDF-space rectangle for the deadline line crop (V.6.0).
 
@@ -481,6 +493,43 @@ def _submission_due_surgical_rect_from_email(email_w: dict[str, Any]) -> fitz.Re
     )
     crop_y1 = max(crop_y0 + 1e-3, crop_y1 - _SUB_DUE_CROP_TRIM_BOTTOM_PX * px_to_pt)
     return fitz.Rect(crop_x0, crop_y0, crop_x1, crop_y1)
+
+
+def _render_rafael_cover_ocr_images(
+    pdf_path: Path,
+    email_w: dict[str, Any],
+) -> tuple[Image.Image | None, Image.Image | None]:
+    """Single ``fitz.open`` / ``close`` for buyer + submission crops (page 1).
+
+    Avoids opening the PDF twice in one parse (serverless / temp-file hygiene) and
+    guarantees both pixmaps come from the same render pass.
+    """
+    buyer_rect = _buyer_crop_rect_from_email(email_w)
+    date_rect = _submission_due_surgical_rect_from_email(email_w)
+    buyer_img: Image.Image | None = None
+    date_img: Image.Image | None = None
+    doc = fitz.open(pdf_path)
+    try:
+        page = doc[0]
+        zoom = _BUYER_OCR_DPI / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+        if not buyer_rect.is_empty and buyer_rect.width > 0 and buyer_rect.height > 0:
+            clip_b = buyer_rect & page.rect
+            if not clip_b.is_empty:
+                pix_b = page.get_pixmap(matrix=mat, clip=clip_b, alpha=False)
+                buyer_img = Image.frombytes(
+                    "RGB", (pix_b.width, pix_b.height), pix_b.samples,
+                )
+        if not date_rect.is_empty and date_rect.width > 0 and date_rect.height > 0:
+            clip_d = date_rect & page.rect
+            if not clip_d.is_empty:
+                pix_d = page.get_pixmap(matrix=mat, clip=clip_d, alpha=False)
+                date_img = Image.frombytes(
+                    "RGB", (pix_d.width, pix_d.height), pix_d.samples,
+                )
+    finally:
+        doc.close()
+    return buyer_img, date_img
 
 
 _RE_OCR_DMY = re.compile(r"(\d{2}/\d{2}/\d{4})")
@@ -576,6 +625,8 @@ def _ocr_space_parsed_text_once(
 def _submission_due_date_from_ocr_space(
     pdf_path: Path,
     email_w: dict[str, Any],
+    *,
+    crop_image: Image.Image | None = None,
 ) -> str:
     """Surgical crop of the cover deadline line → JPEG → OCR.space → strict ``dd/mm/yyyy``."""
     api_key = (os.environ.get("OCR_SPACE_API_KEY") or "").strip()
@@ -586,19 +637,22 @@ def _submission_due_date_from_ocr_space(
     if rect.is_empty or rect.width <= 0 or rect.height <= 0:
         return ""
 
-    doc = fitz.open(pdf_path)
-    try:
-        page = doc[0]
-        clip = rect & page.rect
-        if clip.is_empty:
-            return ""
-        zoom = _BUYER_OCR_DPI / 72.0
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
-    finally:
-        doc.close()
+    if crop_image is not None:
+        img = crop_image.copy()
+    else:
+        doc = fitz.open(pdf_path)
+        try:
+            page = doc[0]
+            clip = rect & page.rect
+            if clip.is_empty:
+                return ""
+            zoom = _BUYER_OCR_DPI / 72.0
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
+        finally:
+            doc.close()
 
-    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     ocr_debug = os.environ.get("RAFAEL_OCR_DEBUG", "").strip().lower() in (
         "1", "true", "yes", "on",
     )
@@ -634,8 +688,13 @@ def _submission_due_date_from_ocr_space(
 def _buyer_name_from_ocr_space(
     pdf_path: Path,
     email_w: dict[str, Any],
+    *,
+    crop_image: Image.Image | None = None,
 ) -> tuple[str, str | None]:
     """V.5.9 crop → JPEG → OCR.space. Hebrew is supported on **Engine 3** (see OCR.space docs).
+
+    Pass ``crop_image`` when the pixmap was already rendered (e.g. shared
+    ``_render_rafael_cover_ocr_images`` pass) to avoid a second ``fitz.open``.
 
     Returns ``(cleaned_text, failure_reason)``. ``failure_reason`` is ``None`` when
     the cleaned text has at least two Hebrew letters; otherwise a stable code for
@@ -650,31 +709,27 @@ def _buyer_name_from_ocr_space(
     if not api_key:
         return "", None
 
-    x0 = float(email_w["x0"])
-    x1 = float(email_w["x1"])
-    etop = float(email_w["top"])
-    clip_x0 = max(0.0, x0 - _BUYER_CROP_PAD_X0_LEFT)
-    clip_x1 = x1 + _BUYER_CROP_X1_PAD_RIGHT
-    clip_y0 = etop - _BUYER_CROP_DELTA_TOP
-    clip_y1 = etop - _BUYER_CROP_DELTA_BOTTOM
-
-    rect = fitz.Rect(clip_x0, clip_y0, clip_x1, clip_y1)
+    rect = _buyer_crop_rect_from_email(email_w)
+    clip_x0, clip_y0, clip_x1, clip_y1 = rect.x0, rect.y0, rect.x1, rect.y1
     if rect.is_empty or rect.width <= 0 or rect.height <= 0:
         return "", "ocr_space_parse_empty"
 
-    doc = fitz.open(pdf_path)
-    try:
-        page = doc[0]
-        clip = rect & page.rect
-        if clip.is_empty:
-            return "", "ocr_space_parse_empty"
-        zoom = _BUYER_OCR_DPI / 72.0
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
-    finally:
-        doc.close()
+    if crop_image is not None:
+        img = crop_image.copy()
+    else:
+        doc = fitz.open(pdf_path)
+        try:
+            page = doc[0]
+            clip = rect & page.rect
+            if clip.is_empty:
+                return "", "ocr_space_parse_empty"
+            zoom = _BUYER_OCR_DPI / 72.0
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
+        finally:
+            doc.close()
 
-    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
 
     if os.environ.get("RAFAEL_OCR_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
         # Persist the exact image sent to OCR.space so a human can visually verify
@@ -850,7 +905,12 @@ def _buyer_name_from_ocr_space(
     return "", "ocr_space_parse_empty"
 
 
-def _detect_buyer(pdf_path: Path, pages: list[list[dict[str, Any]]]) -> str:
+def _detect_buyer(
+    pdf_path: Path,
+    pages: list[list[dict[str, Any]]],
+    *,
+    buyer_crop_image: Image.Image | None = None,
+) -> str:
     """Buyer Hebrew name: OCR path only; no e-mail dictionary or local-part fallback."""
     global _RAFAEL_LAST_OCR_PARSE_REASON
     _RAFAEL_LAST_OCR_PARSE_REASON = None
@@ -876,8 +936,26 @@ def _detect_buyer(pdf_path: Path, pages: list[list[dict[str, Any]]]) -> str:
             stacklevel=2,
         )
         return "OCR Failed"
-    clean_name, ocr_sub = _buyer_name_from_ocr_space(pdf_path, email_w)
+    clean_name, ocr_sub = _buyer_name_from_ocr_space(
+        pdf_path, email_w, crop_image=buyer_crop_image,
+    )
     _RAFAEL_LAST_OCR_PARSE_REASON = ocr_sub
+    if _hebrew_letter_count(clean_name) >= 2:
+        _RAFAEL_LAST_OCR_PARSE_REASON = None
+        return clean_name
+    if (
+        _hebrew_letter_count(clean_name) < 2
+        and ocr_sub in ("ocr_space_parse_empty", "ocr_space_network_error")
+    ):
+        time.sleep(1.25)
+        c2, s2 = _buyer_name_from_ocr_space(
+            pdf_path, email_w, crop_image=buyer_crop_image,
+        )
+        if _hebrew_letter_count(c2) >= 2 or _hebrew_letter_count(c2) > _hebrew_letter_count(
+            clean_name,
+        ):
+            clean_name, ocr_sub = c2, s2
+            _RAFAEL_LAST_OCR_PARSE_REASON = ocr_sub
     if _hebrew_letter_count(clean_name) >= 2:
         _RAFAEL_LAST_OCR_PARSE_REASON = None
         return clean_name
@@ -931,6 +1009,8 @@ def _detect_submission_date(
     pages: list[list[dict[str, Any]]],
     pdf_pages_raw: list[str],
     issue_date_str: str,
+    *,
+    date_crop_image: Image.Image | None = None,
 ) -> str:
     """Cover deadline ``dd/mm/yyyy``: OCR surgical crop first, then text layer.
 
@@ -941,7 +1021,9 @@ def _detect_submission_date(
     """
     email_w = _find_buyer_email_word(pages[0]) if pages else None
     if email_w is not None and _tesseract_hebrew_ready():
-        ocr_token = _submission_due_date_from_ocr_space(pdf_path, email_w)
+        ocr_token = _submission_due_date_from_ocr_space(
+            pdf_path, email_w, crop_image=date_crop_image,
+        )
         if ocr_token:
             return ocr_token
 
@@ -1078,8 +1160,27 @@ def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
 
     rfq_number = _detect_rfq_number(pages)
     issue_date = _detect_issue_date(pages)
-    buyer_name = _detect_buyer(pdf_path, pages)
-    submission_date = _detect_submission_date(pdf_path, pages, extract_text_pages, issue_date)
+    email_anchor = _find_buyer_email_word(pages[0]) if pages else None
+    buyer_pre_img: Image.Image | None = None
+    date_pre_img: Image.Image | None = None
+    if email_anchor is not None and _tesseract_hebrew_ready():
+        try:
+            buyer_pre_img, date_pre_img = _render_rafael_cover_ocr_images(
+                pdf_path, email_anchor,
+            )
+        except Exception as exc:  # noqa: BLE001 — preload is best-effort
+            warnings.warn(
+                f"Rafael cover OCR: single-pass pixmap preload failed "
+                f"({type(exc).__name__}: {exc}); falling back to per-field render.",
+                UserWarning,
+                stacklevel=2,
+            )
+            buyer_pre_img, date_pre_img = None, None
+
+    buyer_name = _detect_buyer(pdf_path, pages, buyer_crop_image=buyer_pre_img)
+    submission_date = _detect_submission_date(
+        pdf_path, pages, extract_text_pages, issue_date, date_crop_image=date_pre_img,
+    )
 
     parts = _detect_part_blocks(pages)
 
