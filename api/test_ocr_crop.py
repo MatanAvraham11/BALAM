@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""V.5.9 wide buyer-line crop + OCR.space debug (same crop as ``parse_rafael_rfq``).
+"""V.6.0 debug: buyer-name crop + submission-deadline line crop (same geometry as parser).
 
-Requires ``OCR_SPACE_API_KEY``. Saves RGB crop as ``debug_crop.png``.
+Requires ``OCR_SPACE_API_KEY``. Writes:
+
+* ``debug_crop.png`` — buyer-name surgical crop (same as ``parse_rafael_rfq``).
+* ``debug_date_crop.png`` — cover-letter deadline line crop for ``submission_date``.
 
 Usage::
 
@@ -33,9 +36,12 @@ from parse_rafael_rfq import (  # noqa: E402
     _buyer_name_from_ocr_space,
     _find_buyer_email_word,
     _page_clean_words,
+    _submission_due_date_from_ocr_space,
+    _submission_due_surgical_rect_from_email,
 )
 
-_OUT_PATH = _REPO_ROOT / "debug_crop.png"
+_BUYER_OUT = _REPO_ROOT / "debug_crop.png"
+_DATE_OUT = _REPO_ROOT / "debug_date_crop.png"
 
 
 def main() -> int:
@@ -78,7 +84,7 @@ def main() -> int:
         page = doc[0]
         clip = rect & page.rect
         if clip.is_empty or clip.width <= 0 or clip.height <= 0:
-            print(f"Empty clip after intersecting page: {rect!r}", file=sys.stderr)
+            print(f"Empty buyer clip after intersecting page: {rect!r}", file=sys.stderr)
             return 1
         zoom = _BUYER_OCR_DPI / 72.0
         mat = fitz.Matrix(zoom, zoom)
@@ -87,14 +93,37 @@ def main() -> int:
         doc.close()
 
     img_rgb = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-    img_rgb.save(_OUT_PATH.as_posix())
+    img_rgb.save(_BUYER_OUT.as_posix())
     print(
-        f"Crop (pt): x0={crop_x0:.3f} y0={crop_top:.3f} x1={crop_x1:.3f} y1={crop_bottom:.3f}  "
-        f"→ {pix.width}×{pix.height}px @ {_BUYER_OCR_DPI:.0f} DPI → {_OUT_PATH}",
+        f"Buyer crop (pt): x0={crop_x0:.3f} y0={crop_top:.3f} x1={crop_x1:.3f} y1={crop_bottom:.3f}  "
+        f"→ {pix.width}×{pix.height}px @ {_BUYER_OCR_DPI:.0f} DPI → {_BUYER_OUT}",
     )
 
     clean, _reason = _buyer_name_from_ocr_space(pdf_path, anchor)
     print("CLEAN_NAME:", repr(clean))
+
+    # Submission deadline line (V.6.0)
+    drect = _submission_due_surgical_rect_from_email(anchor)
+    doc2 = fitz.open(pdf_path)
+    try:
+        page2 = doc2[0]
+        dclip = drect & page2.rect
+        if dclip.is_empty or dclip.width <= 0 or dclip.height <= 0:
+            print(f"Empty date clip: {drect!r}", file=sys.stderr)
+            return 1
+        mat2 = fitz.Matrix(zoom, zoom)
+        pix2 = page2.get_pixmap(matrix=mat2, clip=dclip, alpha=False)
+    finally:
+        doc2.close()
+
+    img_date = Image.frombytes("RGB", (pix2.width, pix2.height), pix2.samples)
+    img_date.save(_DATE_OUT.as_posix())
+    print(
+        f"Date crop (pt): x0={drect.x0:.3f} y0={drect.y0:.3f} x1={drect.x1:.3f} y1={drect.y1:.3f}  "
+        f"→ {pix2.width}×{pix2.height}px → {_DATE_OUT}",
+    )
+    due = _submission_due_date_from_ocr_space(pdf_path, anchor)
+    print("SUBMISSION_DUE_OCR:", repr(due))
     return 0
 
 

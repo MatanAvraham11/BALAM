@@ -23,6 +23,8 @@ type RafaelResponse = {
   rfq_number: string;
   buyer_name: string;
   submission_date: string;
+  /** Same as submission_date (V.6.0 alias). */
+  submission_due_date?: string;
   buyer_ocr_ready?: boolean;
   buyer_ocr_reason?: string | null;
   buyer_ocr_http_status?: number | null;

@@ -1,5 +1,5 @@
 """
-Rafael BOM (RFQ) parser — V.5.9.
+Rafael BOM (RFQ) parser — V.6.0.
 
 Rafael RFQ PDFs are landscape A4 with a custom subset font whose CMap is
 broken for the Hebrew labels (every Hebrew glyph extracts as a
@@ -36,8 +36,13 @@ Globals (page-header band, y ≲ 140 pt)
       ``debug_crop.png`` (override path with ``RAFAEL_OCR_DEBUG_PATH``).
     * Buyer email     — sz=9,  x≈100–180, y≈100     (geometry anchor for OCR crop)
     * Buyer phone     — sz=9,  x≈130–180, y≈88
-    * Submission date — first ``dd/mm/yyyy`` found in ``extract_text()`` in page order
-      (cover-letter paragraph; many RFQs omit it from the text layer — then issue date)
+    * Submission date — **V.6.0:** first try **OCR.space** on a surgical crop of the
+      cover-letter deadline line (``…לא יאוחר מיום DD/MM/YYYY בשעה…``). The Hebrew
+      anchor is not in the text layer (subset font), so the crop is anchored with
+      the e-mail row plus calibrated ``x``/``y`` offsets (see ``_SUB_DUE_*`` constants).
+      Digits are parsed with a strict ``\\d{2}/\\d{2}/\\d{4}`` regex after OCR. If OCR
+      is disabled or yields no valid date, fall back to the first ``dd/mm/yyyy`` in
+      ``extract_text()`` (page order), then the issue date.
 
 Locals (per delivery row, repeating per part block)
     * Quantity         — sz=9, x≈266–290     (``\\d+\\.\\d{2}``)
@@ -68,7 +73,7 @@ from typing import Any
 import fitz  # PyMuPDF
 import pdfplumber
 from PIL import Image
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +104,12 @@ class RafaelRfq(BaseModel):
     buyer_name: str = Field(description="שם קניין")
     submission_date: str = Field(description="תאריך סופי להגשה (dd/mm/yyyy)")
     parts: list[PartBlock] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def submission_due_date(self) -> str:
+        """Same value as ``submission_date`` (explicit API / client alias)."""
+        return self.submission_date
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +145,34 @@ _BUYER_CROP_X1_PAD_RIGHT = 2.0
 _BUYER_CROP_DELTA_TOP = 27.0
 _BUYER_CROP_DELTA_BOTTOM = 13.0
 _BUYER_OCR_DPI = 300.0
+
+# V.6.0 — Cover-letter **submission deadline** line (``…לא יאוחר מיום DD/MM/YYYY בשעה…``).
+# Hebrew is not extractable in the PDF text layer; geometry is stable on the three
+# reference RFQs (landscape A4). We anchor the vertical band to the e-mail row
+# (``…@rafael.co.il`` at ``top ≈ 100.3``) and place the deadline line ~76 pt below it.
+#
+# Horizontal window (calibrated visually on reference RFQs):
+#   _SUB_DUE_CROP_X0 = 285 pt  — left edge: just before DD of DD/MM/YYYY (drops ``בשעה``)
+#   _SUB_DUE_CROP_X1 = 348 pt  — right edge: flush after the final ם of ``מיום``
+# In PyMuPDF, x increases left→right; Hebrew RTL means the date sits at lower x
+# than the anchor phrase. This window delivers "08/05/2026 מיום" to OCR and the
+# strict (\d{2}/\d{2}/\d{4}) regex strips the Hebrew suffix cleanly.
+_SUB_DUE_CROP_X0 = 285.0
+_SUB_DUE_CROP_X1 = 348.0
+# Fine-tune in **screen pixels** at ``_BUYER_OCR_DPI`` (same DPI as the pixmap).
+_SUB_DUE_CROP_EXTEND_LEFT_PX = 5.0
+_SUB_DUE_CROP_EXTEND_RIGHT_PX = 40.0
+_SUB_DUE_CROP_TRIM_RIGHT_PX = 124.0
+_SUB_DUE_CROP_TRIM_BOTTOM_PX = 10.0
+_SUB_DUE_ANCHOR_TOP_OFF_FROM_EMAIL = 76.0
+_SUB_DUE_ANCHOR_LINE_HEIGHT = 8.0
+_SUB_DUE_CROP_PAD_Y = 2.5
+_SUB_DUE_OCR_LANGS: tuple[tuple[str, str], ...] = (
+    ("eng", "3"),
+    ("heb", "3"),
+    ("auto", "3"),
+    ("auto", "2"),
+)
 
 # Per-row column x-bands
 _QTY_X = (255.0, 295.0)
@@ -418,6 +457,178 @@ def _ocr_space_collect_parsed_text(payload: dict[str, Any]) -> str:
         if txt:
             chunks.append(str(txt).strip())
     return "\n".join(chunks).strip()
+
+
+def _submission_due_surgical_rect_from_email(email_w: dict[str, Any]) -> fitz.Rect:
+    """Return PDF-space rectangle for the deadline line crop (V.6.0).
+
+    Horizontal bounds: ``_SUB_DUE_CROP_X0/X1`` in PDF pt, plus a few px at
+    ``_BUYER_OCR_DPI`` — extend left/right, trim right & bottom (see ``_SUB_DUE_CROP_*_PX``).
+    Vertical band is anchored to the e-mail row (see ``_SUB_DUE_ANCHOR_*``).
+    """
+    etop = float(email_w["top"])
+    anchor_top = etop + _SUB_DUE_ANCHOR_TOP_OFF_FROM_EMAIL
+    anchor_bottom = anchor_top + _SUB_DUE_ANCHOR_LINE_HEIGHT
+    crop_y0 = max(0.0, anchor_top - _SUB_DUE_CROP_PAD_Y)
+    crop_y1 = anchor_bottom + _SUB_DUE_CROP_PAD_Y
+    # Pixel tweaks at render DPI → PDF points (72 pt = 1 in; ``_BUYER_OCR_DPI`` px/in).
+    px_to_pt = 72.0 / float(_BUYER_OCR_DPI)
+    crop_x0 = max(0.0, _SUB_DUE_CROP_X0 - _SUB_DUE_CROP_EXTEND_LEFT_PX * px_to_pt)
+    crop_x1 = max(
+        crop_x0 + 1e-3,
+        _SUB_DUE_CROP_X1
+        + (_SUB_DUE_CROP_EXTEND_RIGHT_PX - _SUB_DUE_CROP_TRIM_RIGHT_PX) * px_to_pt,
+    )
+    crop_y1 = max(crop_y0 + 1e-3, crop_y1 - _SUB_DUE_CROP_TRIM_BOTTOM_PX * px_to_pt)
+    return fitz.Rect(crop_x0, crop_y0, crop_x1, crop_y1)
+
+
+_RE_OCR_DMY = re.compile(r"(\d{2}/\d{2}/\d{4})")
+
+
+def _normalize_ocr_date_slashes(text: str) -> str:
+    """Map common OCR slash / hyphen variants to ASCII ``/`` for regex matching."""
+    s = (text or "").replace("\u2212", "/").replace("−", "/")
+    s = s.replace("\\", "/")
+    return s
+
+
+def _extract_valid_submission_dmy_from_ocr_text(raw: str) -> str:
+    """Strict ``dd/mm/yyyy`` via regex + calendar check (drops stray letters around digits)."""
+    s = _normalize_ocr_date_slashes(raw)
+    # Allow OCR to emit hyphens between digit groups (``08-05-2026``) before slash match.
+    s = re.sub(r"(\d{2})\s*[-–—]\s*(\d{2})\s*[-–—]\s*(\d{4})", r"\1/\2/\3", s)
+    m = _RE_OCR_DMY.search(s)
+    if not m:
+        return ""
+    token = m.group(1)
+    return token if _parse_dmy(token) else ""
+
+
+def _ocr_space_parsed_text_once(
+    jpeg_bytes: bytes,
+    api_key: str,
+    language: str,
+    engine: str,
+    upload_name: str,
+    ocr_debug: bool,
+) -> str:
+    """Single OCR.space multipart call with up to three HTTP retries."""
+    import requests  # noqa: PLC0415
+    from requests import exceptions as req_exc  # noqa: PLC0415
+
+    r: Any = None
+    for attempt in range(3):
+        if attempt:
+            time.sleep(0.7 * (2 ** (attempt - 1)))
+        try:
+            r = requests.post(
+                _OCR_SPACE_URL,
+                data={
+                    "apikey": api_key,
+                    "language": language,
+                    "isOverlayRequired": "false",
+                    "scale": "true",
+                    "OCREngine": engine,
+                },
+                files={"file": (upload_name, jpeg_bytes, "image/jpeg")},
+                timeout=90,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (compatible; BalamRafael/1.0; "
+                        "+https://github.com/MatanAvraham11/BALAM)"
+                    ),
+                },
+            )
+        except (req_exc.ConnectionError, req_exc.Timeout, OSError):
+            r = None
+            if attempt == 2:
+                return ""
+            continue
+        if r.ok:
+            break
+        if r.status_code in _OCR_SPACE_RETRYABLE_HTTP and attempt < 2:
+            continue
+        if ocr_debug:
+            warnings.warn(
+                f"OCR.space HTTP {r.status_code} for engine={engine} lang={language}",
+                UserWarning,
+                stacklevel=3,
+            )
+        return ""
+    assert r is not None and r.ok
+    try:
+        payload = r.json()
+    except ValueError:
+        return ""
+    raw = _ocr_space_collect_parsed_text(payload)
+    if ocr_debug and not raw:
+        warnings.warn(
+            "OCR.space debug (submission): "
+            f"OCRExitCode={payload.get('OCRExitCode')!r} "
+            f"ErrorMessage={payload.get('ErrorMessage')!r}",
+            UserWarning,
+            stacklevel=3,
+        )
+    return raw
+
+
+def _submission_due_date_from_ocr_space(
+    pdf_path: Path,
+    email_w: dict[str, Any],
+) -> str:
+    """Surgical crop of the cover deadline line → JPEG → OCR.space → strict ``dd/mm/yyyy``."""
+    api_key = (os.environ.get("OCR_SPACE_API_KEY") or "").strip()
+    if not api_key:
+        return ""
+
+    rect = _submission_due_surgical_rect_from_email(email_w)
+    if rect.is_empty or rect.width <= 0 or rect.height <= 0:
+        return ""
+
+    doc = fitz.open(pdf_path)
+    try:
+        page = doc[0]
+        clip = rect & page.rect
+        if clip.is_empty:
+            return ""
+        zoom = _BUYER_OCR_DPI / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
+    finally:
+        doc.close()
+
+    img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    ocr_debug = os.environ.get("RAFAEL_OCR_DEBUG", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if ocr_debug:
+        dpath = Path(os.environ.get("RAFAEL_OCR_DEBUG_DATE_PATH") or "debug_date_crop.png")
+        try:
+            img.save(dpath)
+            warnings.warn(
+                f"Rafael submission-date OCR: debug crop saved to {dpath} "
+                f"(rect={rect.x0:.1f},{rect.y0:.1f},{rect.x1:.1f},{rect.y1:.1f}).",
+                UserWarning,
+                stacklevel=2,
+            )
+        except OSError as exc:
+            warnings.warn(
+                f"Rafael submission-date OCR: failed to save debug_date_crop.png: {exc}",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    jpeg_bytes = _pil_jpeg_bytes_under_limit(img)
+
+    for lang, eng in _SUB_DUE_OCR_LANGS:
+        raw = _ocr_space_parsed_text_once(
+            jpeg_bytes, api_key, lang, eng, "submission_due.jpg", ocr_debug,
+        )
+        token = _extract_valid_submission_dmy_from_ocr_text(raw)
+        if token:
+            return token
+    return ""
 
 
 def _buyer_name_from_ocr_space(
@@ -716,15 +927,24 @@ def _detect_issue_date(pages: list[list[dict[str, Any]]]) -> str:
 
 
 def _detect_submission_date(
+    pdf_path: Path,
+    pages: list[list[dict[str, Any]]],
     pdf_pages_raw: list[str],
     issue_date_str: str,
 ) -> str:
-    """First ``dd/mm/yyyy`` in ``extract_text()`` in ascending page order.
+    """Cover deadline ``dd/mm/yyyy``: OCR surgical crop first, then text layer.
 
-    This matches the cover / supplier-letter region when the date is present
-    in the text layer. If the PDF only embeds the deadline as artwork, we
-    fall back to the issue-date string (still a valid ``dd/mm/yyyy``).
+    **V.6.0:** OCR is preferred so we do not pick an unrelated ``dd/mm/yyyy`` token
+    that appears earlier in ``extract_text()`` page order (e.g. internal dates on
+    later pages). Falls back to the first valid date in ``extract_text()``, then the
+    issue date string.
     """
+    email_w = _find_buyer_email_word(pages[0]) if pages else None
+    if email_w is not None and _tesseract_hebrew_ready():
+        ocr_token = _submission_due_date_from_ocr_space(pdf_path, email_w)
+        if ocr_token:
+            return ocr_token
+
     date_re = re.compile(r"\b(\d{2}/\d{2}/\d{4})\b")
     for text in pdf_pages_raw:
         m = date_re.search(text or "")
@@ -859,7 +1079,7 @@ def parse_rafael_rfq(pdf_path: str | Path) -> RafaelRfq:
     rfq_number = _detect_rfq_number(pages)
     issue_date = _detect_issue_date(pages)
     buyer_name = _detect_buyer(pdf_path, pages)
-    submission_date = _detect_submission_date(extract_text_pages, issue_date)
+    submission_date = _detect_submission_date(pdf_path, pages, extract_text_pages, issue_date)
 
     parts = _detect_part_blocks(pages)
 

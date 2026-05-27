@@ -34,6 +34,7 @@ from parse_rafael_rfq import (  # noqa: E402
     RafaelRfq,
     _buyer_ocr_label_clean,
     _classify_fai_digit,
+    _extract_valid_submission_dmy_from_ocr_text,
     _format_issue_date,
     _hebrew_letter_count,
     _ocr_space_collect_parsed_text,
@@ -103,6 +104,37 @@ def _resolve_pdf_cases() -> list[dict]:
 
 
 _PDF_CASES = _resolve_pdf_cases()
+
+
+class SubmissionDueDateOcrExtractTests(unittest.TestCase):
+    """``_extract_valid_submission_dmy_from_ocr_text`` — strict ``dd/mm/yyyy`` from OCR."""
+
+    def test_plain_slash(self):
+        self.assertEqual(
+            _extract_valid_submission_dmy_from_ocr_text("noise 08/05/2026 tail"),
+            "08/05/2026",
+        )
+
+    def test_hyphen_variant(self):
+        self.assertEqual(
+            _extract_valid_submission_dmy_from_ocr_text("08-05-2026"),
+            "08/05/2026",
+        )
+
+    def test_unicode_minus_normalised(self):
+        self.assertEqual(
+            _extract_valid_submission_dmy_from_ocr_text("08\u221205\u22122026"),
+            "08/05/2026",
+        )
+
+    def test_invalid_calendar_returns_empty(self):
+        self.assertEqual(_extract_valid_submission_dmy_from_ocr_text("32/13/2026"), "")
+
+    def test_first_valid_wins(self):
+        self.assertEqual(
+            _extract_valid_submission_dmy_from_ocr_text("31/12/2025 08/05/2026"),
+            "31/12/2025",
+        )
 
 
 class BuyerOcrLabelCleanTests(unittest.TestCase):

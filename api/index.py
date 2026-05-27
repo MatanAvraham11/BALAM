@@ -371,6 +371,7 @@ async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONRespons
             "rfq_number": rfq.rfq_number,
             "buyer_name": rfq.buyer_name,
             "submission_date": rfq.submission_date,
+            "submission_due_date": rfq.submission_due_date,
             "buyer_ocr_ready": ocr_status["ready"],
             "buyer_ocr_reason": ocr_status["reason"],
             "rows": rows,
