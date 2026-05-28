@@ -370,6 +370,7 @@ export default function RafaelTab() {
               file={zipFile}
               onFile={handleZipFile}
               onError={(msg) => setZipError(msg)}
+              acceptKind="zip"
               disabled={zipLoading}
             />
 

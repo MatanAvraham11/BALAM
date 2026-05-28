@@ -1,13 +1,37 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useDropzone } from "react-dropzone";
+import { useDropzone, type Accept } from "react-dropzone";
+
+export const ACCEPT_PDF: Accept = { "application/pdf": [".pdf"] };
+
+export const ACCEPT_ZIP: Accept = {
+  "application/zip": [".zip"],
+  "application/x-zip-compressed": [".zip"],
+  "multipart/x-zip": [".zip"],
+  /** macOS / some browsers label ZIP as octet-stream — restrict to .zip extension */
+  "application/octet-stream": [".zip"],
+};
+
+export type FileDropzoneAcceptKind = "pdf" | "zip";
+
+const ACCEPT_BY_KIND: Record<FileDropzoneAcceptKind, Accept> = {
+  pdf: ACCEPT_PDF,
+  zip: ACCEPT_ZIP,
+};
+
+const HINT_BY_KIND: Record<FileDropzoneAcceptKind, string> = {
+  pdf: "PDF בלבד",
+  zip: "ZIP בלבד",
+};
 
 type Props = {
   label: string;
   file: File | null;
   onFile: (f: File | null) => void;
   disabled?: boolean;
+  /** Which file types to accept. Defaults to PDF (existing tabs). */
+  acceptKind?: FileDropzoneAcceptKind;
   /** Rendered directly under the dashed drop zone, above the security notice */
   belowDropzone?: ReactNode;
   /** Called with a human-readable message when a file is rejected */
@@ -19,14 +43,26 @@ export default function FileDropzone({
   file,
   onFile,
   disabled,
+  acceptKind = "pdf",
   belowDropzone,
   onError,
 }: Props) {
+  const kindLabel = acceptKind === "zip" ? "ZIP" : "PDF";
+
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    accept: { "application/pdf": [".pdf"] },
+    accept: ACCEPT_BY_KIND[acceptKind],
     multiple: false,
     maxSize: 50 * 1024 * 1024,
     disabled,
+    validator: (file) => {
+      if (acceptKind === "zip" && !file.name.toLowerCase().endsWith(".zip")) {
+        return {
+          code: "file-invalid-type",
+          message: "ZIP extension required",
+        };
+      }
+      return null;
+    },
     onDrop: (accepted) => {
       if (accepted.length > 0) onFile(accepted[0]);
     },
@@ -35,13 +71,13 @@ export default function FileDropzone({
       const first = rejections[0];
       const code = first?.errors?.[0]?.code ?? "";
       if (code === "file-invalid-type") {
-        onError("סוג קובץ לא תקין. יש להעלות קובץ PDF בלבד.");
+        onError(`סוג קובץ לא תקין. יש להעלות קובץ ${kindLabel} בלבד.`);
       } else if (code === "file-too-large") {
         onError("הקובץ גדול מדי. יש להעלות קובץ עד 50MB.");
       } else if (code === "too-many-files") {
         onError("ניתן להעלות קובץ אחד בלבד.");
       } else {
-        onError("הקובץ נדחה. יש להעלות קובץ PDF תקין.");
+        onError(`הקובץ נדחה. יש להעלות קובץ ${kindLabel} תקין.`);
       }
     },
   });
@@ -63,7 +99,7 @@ export default function FileDropzone({
             נבחר: <span className="font-semibold">{file.name}</span>
           </p>
         ) : (
-          <p className="mt-2 text-xs text-gray-500">PDF בלבד</p>
+          <p className="mt-2 text-xs text-gray-500">{HINT_BY_KIND[acceptKind]}</p>
         )}
       </div>
 
