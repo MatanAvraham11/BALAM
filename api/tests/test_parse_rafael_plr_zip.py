@@ -54,6 +54,22 @@ def _make_product_zip(plr_files: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
+def _make_dirty_csv_plr_with_quoted_newline_header(
+    part_number: str,
+    rows: list[tuple[str, str]],
+) -> bytes:
+    """PLM-style CSV: header cell contains a literal newline inside quotes."""
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow([f"Part List for: {part_number}", "Report Date: 01-01-2026"])
+    w.writerow(["", "Fixed\nQTY", "Operation Sequence", "", "Component Item", "Desc"])
+    w.writerow([])
+    for op, comp in rows:
+        # Align with header indices: op=2, component item=4
+        w.writerow(["", "", op, "", comp, "POLYIMIDE"])
+    return buf.getvalue().encode("utf-8")
+
+
 def _make_csv_plr_leading_empty_col(
     part_number: str,
     rows: list[tuple[str, str]],
@@ -251,6 +267,22 @@ class TestEdgeCases(unittest.TestCase):
         self.assertEqual(len(result["rows"]), 1)
         self.assertEqual(result["rows"][0]["component_item"], "FROM_NESTED_ZIP")
         self.assertEqual(result["total_file_count"], 1)
+
+    def test_quoted_newline_in_header_cell(self):
+        """csv.reader must not break when a header field contains \\n inside quotes."""
+        csv_bytes = _make_dirty_csv_plr_with_quoted_newline_header(
+            "BD01006",
+            [("1.0", "316150321"), ("2.0", "316150322")],
+        )
+        inner_zip = _make_inner_zip("BD01006_rev.xls", csv_bytes)
+        product = _make_product_zip({"PLReport_BD01006_01.zip": inner_zip})
+        result = extract_plr_rows_from_zip(product, "BD01006")
+        self.assertEqual(len(result["rows"]), 2)
+        self.assertEqual(result["rows"][0]["component_item"], "316150321")
+        self.assertFalse(
+            any("לא נמצאו שורות נתונים" in w for w in result["warnings"]),
+            msg=result["warnings"],
+        )
 
     def test_leading_empty_column_in_data_rows(self):
         csv_bytes = _make_csv_plr_leading_empty_col(

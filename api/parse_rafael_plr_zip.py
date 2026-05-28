@@ -60,6 +60,10 @@ _RE_PLR_HEADER = re.compile(
 _HEADER_COL_OP_SEQ = "operation sequence"
 _HEADER_COL_COMP_ITEM = "component item"
 
+_RE_COLLAPSE_WS = re.compile(r"\s+")
+
+_CSV_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -267,22 +271,33 @@ def _parse_plr_payload(data: bytes) -> tuple[str | None, list[dict[str, str]]]:
     """Parse inner PLR payload (``.xls`` that is usually comma-separated text).
 
     Returns ``(part_number_or_None, rows)``.
-    Tries CSV/text first, then binary xls via ``pandas+xlrd``, then xlsx.
+    Tries ``csv.reader`` on the full decoded stream first (handles quoted newlines),
+    then binary xls via ``pandas+xlrd``, then xlsx.
     """
-    # Pass 1 — comma-separated text (typical inner .xls from Rafael PLM)
-    for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+    # Pass 1 — dirty CSV text (must not use line.split — breaks quoted newlines)
+    best_pn: str | None = None
+    best_rows: list[dict[str, str]] = []
+    for encoding in _CSV_ENCODINGS:
         try:
             text = data.decode(encoding)
-            result = _parse_plr_from_text_lines(text.splitlines())
-            if result[0] is not None and result[1]:
-                return result
-            if result[0] is not None or _looks_like_text(data):
-                return result
-        except Exception:  # noqa: BLE001
+        except UnicodeDecodeError:
             continue
+        file_pn, rows = _parse_plr_csv_stream(text)
+        if file_pn and rows:
+            return file_pn, rows
+        if file_pn and best_pn is None:
+            best_pn = file_pn
+        if len(rows) > len(best_rows):
+            best_rows = rows
+    if best_pn is not None and best_rows:
+        return best_pn, best_rows
+    if best_pn is not None and _looks_like_text(data):
+        return best_pn, best_rows
     try:
         text = data.decode("utf-8", errors="replace")
-        return _parse_plr_from_text_lines(text.splitlines())
+        file_pn, rows = _parse_plr_csv_stream(text)
+        if file_pn is not None:
+            return file_pn, rows
     except Exception:  # noqa: BLE001
         pass
 
@@ -321,54 +336,66 @@ def _looks_like_text(data: bytes) -> bool:
     return printable / max(len(decoded), 1) > 0.85
 
 
-def _parse_plr_from_text_lines(
-    lines: list[str],
-) -> tuple[str | None, list[dict[str, str]]]:
-    """Parse PLR from comma-separated text (inner .xls is usually CSV under the hood)."""
+def _normalize_plr_header_cell(cell: str) -> str:
+    """Collapse PLM newlines/tabs inside header cells for reliable name matching."""
+    return _RE_COLLAPSE_WS.sub(" ", (cell or "").replace("\r", " ")).strip().lower()
+
+
+def _find_plr_column_index(row: list[str], header_name: str) -> int | None:
+    target = header_name.lower()
+    for idx, cell in enumerate(row):
+        if _normalize_plr_header_cell(cell) == target:
+            return idx
+    return None
+
+
+def _row_is_effectively_empty(row: list[str]) -> bool:
+    return not any((c or "").strip() for c in row)
+
+
+def _parse_plr_csv_stream(text: str) -> tuple[str | None, list[dict[str, str]]]:
+    """Parse dirty PLM CSV using ``csv.reader`` on the full stream (not line-split)."""
     file_pn: str | None = None
     op_seq_col: int | None = None
     comp_item_col: int | None = None
     in_data_section = False
     rows: list[dict[str, str]] = []
 
-    reader = csv.reader(lines, delimiter=",")
+    reader = csv.reader(io.StringIO(text), delimiter=",")
     for raw_row in reader:
-        # Keep rows that are only trailing empties; skip wholly absent lines.
-        if raw_row is not None and len(raw_row) == 0:
+        if _row_is_effectively_empty(raw_row):
             continue
 
-        # Find "Part List for: <PN>" (may appear in any cell, including after leading commas)
         if file_pn is None:
             for cell in raw_row:
                 m = _RE_PLR_HEADER.search(cell or "")
                 if m:
                     file_pn = m.group(1).strip()
                     break
-            if file_pn is None:
-                continue
             continue
 
-        # Find header row — column indices account for a leading empty column
         if not in_data_section:
-            row_lower = [(c or "").strip().lower() for c in raw_row]
-            if _HEADER_COL_OP_SEQ in row_lower and _HEADER_COL_COMP_ITEM in row_lower:
-                op_seq_col = row_lower.index(_HEADER_COL_OP_SEQ)
-                comp_item_col = row_lower.index(_HEADER_COL_COMP_ITEM)
+            op_idx = _find_plr_column_index(raw_row, _HEADER_COL_OP_SEQ)
+            comp_idx = _find_plr_column_index(raw_row, _HEADER_COL_COMP_ITEM)
+            if op_idx is not None and comp_idx is not None:
+                op_seq_col = op_idx
+                comp_item_col = comp_idx
                 in_data_section = True
             continue
 
-        # Data rows: do not reject because index 0 is empty (e.g. ",1.0,,316150321,...")
-        op_val = _safe_cell(raw_row, op_seq_col)
         comp_val = _safe_cell(raw_row, comp_item_col)
-        if _is_plr_data_row(op_val, comp_val):
-            rows.append({"operation_sequence": op_val, "component_item": comp_val})
+        if not _has_component_item(comp_val):
+            continue
+
+        op_val = _safe_cell(raw_row, op_seq_col)
+        rows.append({"operation_sequence": op_val, "component_item": comp_val})
 
     return file_pn, rows
 
 
-def _is_plr_data_row(operation_sequence: str, component_item: str) -> bool:
-    """True when at least one of the target columns has a non-empty value."""
-    return bool((operation_sequence or "").strip() or (component_item or "").strip())
+def _has_component_item(component_item: str) -> bool:
+    """A valid PLR data row must have a non-empty Component Item."""
+    return bool((component_item or "").strip())
 
 
 def _parse_plr_from_dataframe(df: Any) -> tuple[str | None, list[dict[str, str]]]:
@@ -393,17 +420,19 @@ def _parse_plr_from_dataframe(df: Any) -> tuple[str | None, list[dict[str, str]]
             continue
 
         if not in_data_section:
-            cells_lower = [c.lower() for c in cells]
-            if _HEADER_COL_OP_SEQ in cells_lower and _HEADER_COL_COMP_ITEM in cells_lower:
-                op_seq_col = cells_lower.index(_HEADER_COL_OP_SEQ)
-                comp_item_col = cells_lower.index(_HEADER_COL_COMP_ITEM)
+            op_idx = _find_plr_column_index(cells, _HEADER_COL_OP_SEQ)
+            comp_idx = _find_plr_column_index(cells, _HEADER_COL_COMP_ITEM)
+            if op_idx is not None and comp_idx is not None:
+                op_seq_col = op_idx
+                comp_item_col = comp_idx
                 in_data_section = True
             continue
 
-        op_val = _safe_cell(cells, op_seq_col)
         comp_val = _safe_cell(cells, comp_item_col)
-        if _is_plr_data_row(op_val, comp_val):
-            rows.append({"operation_sequence": op_val, "component_item": comp_val})
+        if not _has_component_item(comp_val):
+            continue
+        op_val = _safe_cell(cells, op_seq_col)
+        rows.append({"operation_sequence": op_val, "component_item": comp_val})
 
     return file_pn, rows
 
