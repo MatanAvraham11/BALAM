@@ -54,6 +54,20 @@ def _make_product_zip(plr_files: dict[str, bytes]) -> bytes:
     return buf.getvalue()
 
 
+def _make_csv_plr_leading_empty_col(
+    part_number: str,
+    rows: list[tuple[str, str]],
+) -> bytes:
+    """PLR CSV where data rows start with a leading empty column (Rafael export shape)."""
+    lines = [
+        f"Part List for: {part_number},Report Date: 01-01-2026",
+        ",Operation Sequence,,Component Item,Component Description",
+    ]
+    for op, comp in rows:
+        lines.append(f",{op},,{comp},,POLYIMIDE,,,")
+    return "\n".join(lines).encode("utf-8")
+
+
 def _make_transfer_zip(product_zip_bytes: bytes, product_zip_name: str = "12345_1_PRODUCT.ZIP") -> bytes:
     """Wrap a product ZIP in the TransferRequest outer wrapper."""
     buf = io.BytesIO()
@@ -223,6 +237,43 @@ class TestEdgeCases(unittest.TestCase):
         product = _make_product_zip({"PLReport_bd01006_01.zip": inner_zip})
         result = extract_plr_rows_from_zip(product, "BD01006")
         self.assertEqual(result["matched_file_count"], 1)
+
+    def test_ignores_loose_xls_in_data_files(self):
+        """Standalone .xls in data/files/ must not be parsed — only nested PLReport*.zip."""
+        csv_nested = _make_csv_plr("AAA", [("10", "FROM_NESTED_ZIP")])
+        inner_zip = _make_inner_zip("AAA_rev.xls", csv_nested)
+        csv_loose = _make_csv_plr("WRONG_PN", [("99", "FROM_LOOSE_XLS")])
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("data/files/PLReport_AAA_01.zip", inner_zip)
+            zf.writestr("data/files/Part_MLEDR Report_01.xls", csv_loose)
+        result = extract_plr_rows_from_zip(buf.getvalue(), "AAA")
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertEqual(result["rows"][0]["component_item"], "FROM_NESTED_ZIP")
+        self.assertEqual(result["total_file_count"], 1)
+
+    def test_leading_empty_column_in_data_rows(self):
+        csv_bytes = _make_csv_plr_leading_empty_col(
+            "BD01006",
+            [("1.0", "316150321"), ("2.0", "316150322")],
+        )
+        inner_zip = _make_inner_zip("BD01006_rev.xls", csv_bytes)
+        product = _make_product_zip({"PLReport_BD01006_01.zip": inner_zip})
+        result = extract_plr_rows_from_zip(product, "BD01006")
+        self.assertEqual(len(result["rows"]), 2)
+        self.assertEqual(result["rows"][0]["operation_sequence"], "1.0")
+        self.assertEqual(result["rows"][0]["component_item"], "316150321")
+        self.assertEqual(result["rows"][1]["component_item"], "316150322")
+
+    def test_non_zip_plr_name_in_data_files_is_skipped(self):
+        """A PLReport-named .xls (not .zip) in data/files/ must be ignored."""
+        csv_bytes = _make_csv_plr("AAA", [("10", "SHOULD_NOT_APPEAR")])
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("data/files/PLReport_AAA_01.xls", csv_bytes)
+        result = extract_plr_rows_from_zip(buf.getvalue(), "AAA")
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["total_file_count"], 0)
 
 
 if __name__ == "__main__":

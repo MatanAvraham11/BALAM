@@ -9,9 +9,9 @@ Typical ZIP layout (validated against three sample ZIPs):
     TransferRequest_*.zip            ← optional outer "safe" wrapper
     └── <id>_1_PRODUCT.ZIP           ← the real product ZIP
         └── data/files/              ← all lower-case
-            ├── PLReport_<PN>_*.zip  ← each PLR is itself a ZIP
-            │   └── <PN>_*.xls       ← binary CDFV2 or dirty CSV
-            ├── *_MLEDR Report_*.xls
+            ├── PLReport_<PN>_*.zip  ← ONLY these nested ZIPs are parsed
+            │   └── <PN>_*.xls       ← CSV-formatted text (comma-separated)
+            ├── *_MLEDR*.xls         ← loose XLS in data/files — IGNORED
             └── *.pdf / *.stp / …
 
 The module is intentionally self-contained (no dependency on
@@ -193,57 +193,69 @@ def _iter_plr_payloads_from_product_zip(
     zip_bytes: bytes,
     warnings: list[str],
 ) -> Iterator[tuple[str, bytes]]:
-    """Traverse the actual product ZIP and yield PLR file payloads."""
+    """Traverse the product ZIP and yield inner PLR payloads from nested ZIPs only.
+
+    Under ``data/files/`` we **only** open ``PLReport*.zip`` / ``PLR*.zip`` archives.
+    Standalone ``.xls`` / ``.csv`` siblings in that folder are explicitly ignored.
+    """
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         members = [m for m in zf.infolist() if not m.is_dir()]
-        plr_members = [
-            m for m in members
-            if _is_plr_name(m.filename)
-        ]
-        if not plr_members:
+        plr_zip_members = [m for m in members if _is_plr_nested_zip(m.filename)]
+
+        if not plr_zip_members:
             warnings.append(
-                "לא נמצאו קבצי PLReport_* בתוך data/files/ — "
+                "לא נמצאו קבצי PLReport_*.zip / PLR*.zip בתוך data/files/ — "
                 "בדוק שה-ZIP הוא מסוג Product Transfer."
             )
             return
 
-        for member in plr_members:
+        for member in plr_zip_members:
             raw = zf.read(member.filename)
             leaf = member.filename.rsplit("/", 1)[-1]
-            # PLReport_*.zip → extract single XLS inside
-            if zipfile.is_zipfile(io.BytesIO(raw)):
-                try:
-                    inner_files = _extract_single_from_zip(raw)
-                except Exception as exc:  # noqa: BLE001
-                    warnings.append(
-                        f"{leaf}: הזיפ המקונן פגום ({exc}) — מדולג."
-                    )
-                    continue
-                for inner_name, inner_bytes in inner_files:
-                    yield inner_name, inner_bytes
-            else:
-                # Plain xls/csv directly (non-nested)
-                yield leaf, raw
+            if not zipfile.is_zipfile(io.BytesIO(raw)):
+                warnings.append(f"{leaf}: אינו ZIP תקין — מדולג.")
+                continue
+            try:
+                inner_files = _extract_files_from_nested_plr_zip(raw)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"{leaf}: הזיפ המקונן פגום ({exc}) — מדולג.")
+                continue
+            if not inner_files:
+                warnings.append(f"{leaf}: הזיפ המקונן ריק — מדולג.")
+                continue
+            for inner_name, inner_bytes in inner_files:
+                yield f"{leaf}/{inner_name}", inner_bytes
 
 
-def _is_plr_name(path: str) -> bool:
-    """Return True for data/files/PLReport_* or data/files/PLR_* (case-insensitive)."""
-    lower = path.lower()
+def _is_plr_nested_zip(path: str) -> bool:
+    """True for ``data/files/`` entries that are ``.zip`` and start with PLR / PLReport."""
+    lower = path.replace("\\", "/").lower()
+    if not lower.startswith("data/files/"):
+        return False
     basename = lower.rsplit("/", 1)[-1]
-    return (
-        lower.startswith("data/files/")
-        and (basename.startswith("plreport") or basename.startswith("plr_"))
-    )
+    if not basename.endswith(".zip"):
+        return False
+    stem = basename[:-4]
+    return stem.startswith("plreport") or stem.startswith("plr")
 
 
-def _extract_single_from_zip(zip_bytes: bytes) -> list[tuple[str, bytes]]:
-    """Extract all non-directory files from a nested ZIP, returning (name, bytes)."""
-    results: list[tuple[str, bytes]] = []
+def _extract_files_from_nested_plr_zip(zip_bytes: bytes) -> list[tuple[str, bytes]]:
+    """Extract spreadsheet payloads from a PLReport/PLR nested ZIP (usually one ``.xls``)."""
+    all_files: list[tuple[str, bytes]] = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         for m in zf.infolist():
-            if not m.is_dir():
-                results.append((m.filename.rsplit("/", 1)[-1], zf.read(m.filename)))
-    return results
+            if m.is_dir():
+                continue
+            leaf = m.filename.rsplit("/", 1)[-1]
+            all_files.append((leaf, zf.read(m.filename)))
+    if not all_files:
+        return []
+    xls_like = [
+        (name, data)
+        for name, data in all_files
+        if name.lower().endswith((".xls", ".xlsx", ".csv"))
+    ]
+    return xls_like if xls_like else all_files
 
 
 # ---------------------------------------------------------------------------
@@ -252,18 +264,25 @@ def _extract_single_from_zip(zip_bytes: bytes) -> list[tuple[str, bytes]]:
 
 
 def _parse_plr_payload(data: bytes) -> tuple[str | None, list[dict[str, str]]]:
-    """Parse a PLR payload (xls bytes or CSV bytes).
+    """Parse inner PLR payload (``.xls`` that is usually comma-separated text).
 
     Returns ``(part_number_or_None, rows)``.
-    Tries CSV first (works for both plain CSV and HTML-table disguised CSVs),
-    then binary xls via ``pandas+xlrd``, then xlsx via ``pandas+openpyxl``.
+    Tries CSV/text first, then binary xls via ``pandas+xlrd``, then xlsx.
     """
-    # Pass 1 — text CSV
+    # Pass 1 — comma-separated text (typical inner .xls from Rafael PLM)
+    for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+        try:
+            text = data.decode(encoding)
+            result = _parse_plr_from_text_lines(text.splitlines())
+            if result[0] is not None and result[1]:
+                return result
+            if result[0] is not None or _looks_like_text(data):
+                return result
+        except Exception:  # noqa: BLE001
+            continue
     try:
         text = data.decode("utf-8", errors="replace")
-        result = _parse_plr_from_text_lines(text.splitlines())
-        if result[0] is not None or _looks_like_text(data):
-            return result
+        return _parse_plr_from_text_lines(text.splitlines())
     except Exception:  # noqa: BLE001
         pass
 
@@ -305,42 +324,51 @@ def _looks_like_text(data: bytes) -> bool:
 def _parse_plr_from_text_lines(
     lines: list[str],
 ) -> tuple[str | None, list[dict[str, str]]]:
-    """Parse PLR from plain text lines (CSV with comma delimiter)."""
+    """Parse PLR from comma-separated text (inner .xls is usually CSV under the hood)."""
     file_pn: str | None = None
     op_seq_col: int | None = None
     comp_item_col: int | None = None
+    in_data_section = False
     rows: list[dict[str, str]] = []
 
     reader = csv.reader(lines, delimiter=",")
     for raw_row in reader:
-        if not raw_row:
+        # Keep rows that are only trailing empties; skip wholly absent lines.
+        if raw_row is not None and len(raw_row) == 0:
             continue
-        # Find "Part List for: <PN>"
+
+        # Find "Part List for: <PN>" (may appear in any cell, including after leading commas)
         if file_pn is None:
             for cell in raw_row:
-                m = _RE_PLR_HEADER.search(cell)
+                m = _RE_PLR_HEADER.search(cell or "")
                 if m:
                     file_pn = m.group(1).strip()
                     break
-            continue
-
-        # Find header row
-        if op_seq_col is None:
-            row_lower = [c.strip().lower() for c in raw_row]
-            try:
-                op_seq_col = row_lower.index(_HEADER_COL_OP_SEQ)
-                comp_item_col = row_lower.index(_HEADER_COL_COMP_ITEM)
-            except ValueError:
+            if file_pn is None:
                 continue
             continue
 
-        # Data rows
+        # Find header row — column indices account for a leading empty column
+        if not in_data_section:
+            row_lower = [(c or "").strip().lower() for c in raw_row]
+            if _HEADER_COL_OP_SEQ in row_lower and _HEADER_COL_COMP_ITEM in row_lower:
+                op_seq_col = row_lower.index(_HEADER_COL_OP_SEQ)
+                comp_item_col = row_lower.index(_HEADER_COL_COMP_ITEM)
+                in_data_section = True
+            continue
+
+        # Data rows: do not reject because index 0 is empty (e.g. ",1.0,,316150321,...")
         op_val = _safe_cell(raw_row, op_seq_col)
         comp_val = _safe_cell(raw_row, comp_item_col)
-        if op_val or comp_val:
+        if _is_plr_data_row(op_val, comp_val):
             rows.append({"operation_sequence": op_val, "component_item": comp_val})
 
     return file_pn, rows
+
+
+def _is_plr_data_row(operation_sequence: str, component_item: str) -> bool:
+    """True when at least one of the target columns has a non-empty value."""
+    return bool((operation_sequence or "").strip() or (component_item or "").strip())
 
 
 def _parse_plr_from_dataframe(df: Any) -> tuple[str | None, list[dict[str, str]]]:
@@ -352,30 +380,29 @@ def _parse_plr_from_dataframe(df: Any) -> tuple[str | None, list[dict[str, str]]
     comp_item_col: int | None = None
     rows: list[dict[str, str]] = []
 
+    in_data_section = False
     for _, row in df.iterrows():
         cells = [str(c).strip() if pd.notna(c) else "" for c in row]
-        non_empty = [c for c in cells if c]
 
         if file_pn is None:
-            for cell in non_empty:
+            for cell in cells:
                 m = _RE_PLR_HEADER.search(cell)
                 if m:
                     file_pn = m.group(1).strip()
                     break
             continue
 
-        if op_seq_col is None:
+        if not in_data_section:
             cells_lower = [c.lower() for c in cells]
-            try:
+            if _HEADER_COL_OP_SEQ in cells_lower and _HEADER_COL_COMP_ITEM in cells_lower:
                 op_seq_col = cells_lower.index(_HEADER_COL_OP_SEQ)
                 comp_item_col = cells_lower.index(_HEADER_COL_COMP_ITEM)
-            except ValueError:
-                continue
+                in_data_section = True
             continue
 
-        op_val = cells[op_seq_col] if op_seq_col < len(cells) else ""
-        comp_val = cells[comp_item_col] if comp_item_col < len(cells) else ""
-        if op_val or comp_val:
+        op_val = _safe_cell(cells, op_seq_col)
+        comp_val = _safe_cell(cells, comp_item_col)
+        if _is_plr_data_row(op_val, comp_val):
             rows.append({"operation_sequence": op_val, "component_item": comp_val})
 
     return file_pn, rows
