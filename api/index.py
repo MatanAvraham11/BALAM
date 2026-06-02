@@ -58,6 +58,7 @@ from parse_rafael_rfq import (
 )
 
 app = FastAPI()
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -137,10 +138,28 @@ async def _global_exc_handler(_request: Request, exc: Exception) -> JSONResponse
             status_code=exc.status_code,
             content=_http_exc_body(exc),
         )
+    print(
+        f"[unhandled] {type(exc).__name__}: {exc}",
+        file=sys.stderr,
+        flush=True,
+    )
     return JSONResponse(
         status_code=500,
-        content={"error": str(exc)},
+        content={"error": "Internal server error"},
     )
+
+
+async def _read_upload_bytes(file: UploadFile, *, kind: str) -> bytes:
+    """Read one upload with a hard cap before parser-specific processing."""
+    contents = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(contents) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"קובץ {kind} גדול מדי. יש להעלות קובץ עד 50MB.",
+        )
+    if not contents:
+        raise HTTPException(status_code=400, detail=f"קובץ {kind} ריק.")
+    return contents
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +257,7 @@ async def auth_check(request: Request) -> JSONResponse:
 async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
     _require_auth(request)
 
-    contents = await file.read()
+    contents = await _read_upload_bytes(file, kind="PDF")
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
@@ -309,7 +328,7 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
 async def drawing_endpoint(request: Request, file: UploadFile) -> JSONResponse:
     _require_auth(request)
 
-    contents = await file.read()
+    contents = await _read_upload_bytes(file, kind="PDF")
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
@@ -353,7 +372,7 @@ async def drawing_endpoint(request: Request, file: UploadFile) -> JSONResponse:
 async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONResponse:
     _require_auth(request)
 
-    contents = await file.read()
+    contents = await _read_upload_bytes(file, kind="PDF")
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
@@ -420,9 +439,7 @@ async def rafael_zip_endpoint(
     """
     _require_auth(request)
 
-    zip_bytes = await file.read()
-    if not zip_bytes:
-        raise HTTPException(status_code=400, detail="קובץ ZIP ריק.")
+    zip_bytes = await _read_upload_bytes(file, kind="ZIP")
 
     try:
         result = extract_plr_rows_from_zip(

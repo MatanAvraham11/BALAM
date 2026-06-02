@@ -200,6 +200,40 @@ class TestErrors(unittest.TestCase):
 
         self.assertTrue(any("לא ניתן לקרוא" in msg for msg in cm.exception.messages))
 
+    def test_total_extraction_budget_rejects_nested_zip_bomb(self):
+        inner = _make_inner_zip({"AAA.xls": b"AAA"})
+        product = _make_product_zip({"PLReport_AAA_01.zip": inner})
+
+        with patch("parse_rafael_plr_zip._MAX_TOTAL_EXTRACTED_BYTES", len(inner) - 1):
+            with self.assertRaises(PlrZipParseError) as cm:
+                extract_plr_rows_from_zip(product, "AAA")
+
+        self.assertTrue(any("גודל החילוץ" in msg for msg in cm.exception.messages))
+
+    def test_archive_member_limit_rejects_excess_files(self):
+        inner = _make_inner_zip({"AAA.xls": b"AAA", "BBB.xls": b"BBB"})
+        product = _make_product_zip({"PLReport_AAA_01.zip": inner})
+
+        with patch("parse_rafael_plr_zip._MAX_ARCHIVE_MEMBER_COUNT", 1):
+            with self.assertRaises(PlrZipParseError) as cm:
+                extract_plr_rows_from_zip(product, "AAA")
+
+        self.assertTrue(any("יותר מדי קבצים" in msg for msg in cm.exception.messages))
+
+    def test_total_archive_member_limit_rejects_excess_files(self):
+        inner_a = _make_inner_zip({"AAA.xls": b"AAA"})
+        inner_b = _make_inner_zip({"BBB.xls": b"BBB"})
+        product = _make_product_zip({
+            "PLReport_AAA_01.zip": inner_a,
+            "PLReport_BBB_01.zip": inner_b,
+        })
+
+        with patch("parse_rafael_plr_zip._MAX_TOTAL_ARCHIVE_MEMBER_COUNT", 2):
+            with self.assertRaises(PlrZipParseError) as cm:
+                extract_plr_rows_from_zip(product, "AAA")
+
+        self.assertTrue(any("מספר הקבצים המצטבר" in msg for msg in cm.exception.messages))
+
 
 class TestDataFrameParsing(unittest.TestCase):
     def test_extracts_operation_component_and_qty_from_table(self):
@@ -264,6 +298,17 @@ class TestDataFrameParsing(unittest.TestCase):
             "1\t1\t501090676\t21.9\r\n",
         )
         body.encode("windows-1255", errors="strict")
+
+    def test_tsv_export_neutralizes_formula_and_single_line_injection(self):
+        body = format_plr_tsv_body([
+            {"row_number": 1, **_row("@SUM(1)", "=CMD()", "2\t3\r\n4")},
+        ])
+
+        self.assertEqual(
+            body,
+            "מספר שורה\tOperation Sequence\tComponent Item\tQTY\r\n"
+            "1\t'@SUM(1)\t'=CMD()\t2 3  4\r\n",
+        )
 
 
 class TestLocalSamples(unittest.TestCase):
