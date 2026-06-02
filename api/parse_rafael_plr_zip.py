@@ -35,6 +35,7 @@ _HEADER_COL_COMP_ITEM = "component item"
 _HEADER_COL_QTY = "qty"
 
 PLR_TSV_COLUMNS: list[tuple[str, str]] = [
+    ("מספר שורה", "row_number"),
     ("Operation Sequence", "operation_sequence"),
     ("Component Item", "component_item"),
     ("QTY", "qty"),
@@ -60,7 +61,8 @@ def extract_plr_rows_from_zip(
 ) -> dict[str, Any]:
     """Parse Rafael PLR rows from a Product/TransferRequest ZIP.
 
-    Returns rows with ``operation_sequence``, ``component_item`` and ``qty``.
+    Returns rows with ``row_number``, ``operation_sequence``, ``component_item``
+    and ``qty``.
     Raises ``PlrZipParseError`` for structural or parsing errors.
     """
     parent_pn = (parent_part_number or "").strip()
@@ -99,12 +101,16 @@ def extract_plr_rows_from_zip(
     if errors:
         raise PlrZipParseError(errors)
 
-    combined = matched_rows + other_rows
-    if not combined:
+    combined_rows = matched_rows + other_rows
+    if not combined_rows:
         raise PlrZipParseError("לא נמצאו שורות PLR לאחר פענוח קבצי ה-XLS.")
+    numbered_rows = [
+        {"row_number": row_number, **row}
+        for row_number, row in enumerate(combined_rows, start=1)
+    ]
 
     return {
-        "rows": combined,
+        "rows": numbered_rows,
         "matched_file_count": matched_count,
         "plreport_zip_count": plreport_zip_count,
         "xls_file_count": len(plr_payloads),

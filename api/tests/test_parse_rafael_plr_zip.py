@@ -72,6 +72,7 @@ class TestZipTraversal(unittest.TestCase):
         self.assertEqual(result["plreport_zip_count"], 1)
         self.assertEqual(result["xls_file_count"], 1)
         self.assertEqual(result["matched_file_count"], 1)
+        self.assertEqual(result["rows"][0]["row_number"], 1)
         self.assertEqual(result["rows"][0]["operation_sequence"], "1")
         self.assertEqual(result["rows"][0]["component_item"], "C1")
         self.assertEqual(result["rows"][0]["qty"], "2")
@@ -150,6 +151,7 @@ class TestZipTraversal(unittest.TestCase):
             result = extract_plr_rows_from_zip(product, "BBB")
 
         self.assertEqual(result["matched_file_count"], 1)
+        self.assertEqual([r["row_number"] for r in result["rows"]], [1, 2])
         self.assertEqual(result["rows"][0]["component_item"], "COMP_BBB")
         self.assertEqual(result["rows"][1]["component_item"], "COMP_AAA")
 
@@ -251,13 +253,15 @@ class TestDataFrameParsing(unittest.TestCase):
 
         self.assertTrue(any("לא נמצאו שורות נתונים" in msg for msg in cm.exception.messages))
 
-    def test_tsv_export_has_three_columns(self):
-        body = format_plr_tsv_body([_row("1", "501090676", "21.9")])
+    def test_tsv_export_has_row_number_as_first_column(self):
+        body = format_plr_tsv_body([
+            {"row_number": 1, **_row("1", "501090676", "21.9")},
+        ])
 
         self.assertEqual(
             body,
-            "Operation Sequence\tComponent Item\tQTY\r\n"
-            "1\t501090676\t21.9\r\n",
+            "מספר שורה\tOperation Sequence\tComponent Item\tQTY\r\n"
+            "1\t1\t501090676\t21.9\r\n",
         )
         body.encode("windows-1255", errors="strict")
 
@@ -280,6 +284,10 @@ class TestLocalSamples(unittest.TestCase):
                 self.assertEqual(result["plreport_zip_count"], plreport_count)
                 self.assertEqual(result["xls_file_count"], xls_count)
                 self.assertEqual(len(result["rows"]), row_count)
+                self.assertEqual(
+                    [row["row_number"] for row in result["rows"]],
+                    list(range(1, row_count + 1)),
+                )
                 for row in result["rows"]:
                     self.assertIn("operation_sequence", row)
                     self.assertIn("component_item", row)

@@ -404,6 +404,7 @@ async def rafael_zip_endpoint(
         {
           "rows": [
             {
+              "row_number": 1,
               "operation_sequence": "...",
               "component_item": "...",
               "qty": "..."

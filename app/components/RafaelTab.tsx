@@ -31,6 +31,7 @@ type RafaelResponse = {
 };
 
 type PlrRow = {
+  row_number: number;
   operation_sequence: string;
   component_item: string;
   qty: string;
@@ -45,7 +46,7 @@ type ZipResponse = {
   txt_filename: string;
 };
 
-const PLR_COLUMNS = ["Operation Sequence", "Component Item", "QTY"];
+const PLR_COLUMNS = ["מספר שורה", "Operation Sequence", "Component Item", "QTY"];
 
 const RAFAEL_UPLOAD_ACCEPT: Accept = {
   "application/pdf": [".pdf"],
@@ -276,47 +277,47 @@ const COLUMNS = [
 
 export default function RafaelTab() {
   const [file, setFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [processingStep, setProcessingStep] = useState<"pdf" | "zip" | null>(
+    null,
+  );
   const [data, setData] = useState<RafaelResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   // ZIP state
   const [zipFile, setZipFile] = useState<File | null>(null);
-  const [zipLoading, setZipLoading] = useState(false);
   const [zipData, setZipData] = useState<ZipResponse | null>(null);
   const [zipErrors, setZipErrors] = useState<string[]>([]);
+  const isProcessing = processingStep !== null;
 
-  /** First rafael part number from the PDF result — used as the sort key for PLR files. */
-  const parentPn = useMemo(() => {
-    const first = data?.rows?.[0]?.["מקט רפאל"];
-    return (first || "").trim();
-  }, [data]);
-
-  function handleFile(f: File | null) {
-    setFile(f);
+  function clearResults() {
     setData(null);
     setError(null);
     setSuccess(null);
     setZipData(null);
     setZipErrors([]);
+  }
+
+  function handleFile(f: File | null) {
+    setFile(f);
+    clearResults();
   }
 
   function handleZipFile(f: File | null) {
     setZipFile(f);
-    setError(null);
-    setZipData(null);
-    setZipErrors([]);
+    clearResults();
+  }
+
+  function handleUploadError(message: string) {
+    clearResults();
+    setError(message);
   }
 
   async function handleExtract() {
-    if (!file) return;
-    setLoading(true);
-    setError(null);
-    setSuccess(null);
-    setData(null);
-    setZipData(null);
-    setZipErrors([]);
+    if (!file || !zipFile || isProcessing) return;
+    let step: "pdf" | "zip" = "pdf";
+    setProcessingStep(step);
+    clearResults();
 
     try {
       const fd = new FormData();
@@ -329,18 +330,37 @@ export default function RafaelTab() {
         return;
       }
       const pdfData = json as RafaelResponse;
-      setData(pdfData);
-      setSuccess(
-        `הנתונים חולצו בהצלחה – נמצאו ${json.rows.length} שורות אספקה`,
-      );
-      if (zipFile) {
-        const zipParentPn = (pdfData.rows?.[0]?.["מקט רפאל"] || "").trim();
-        await extractZip(zipFile, zipParentPn);
+      const zipParentPn = (pdfData.rows?.[0]?.["מקט רפאל"] || "").trim();
+
+      step = "zip";
+      setProcessingStep(step);
+      const zipFd = new FormData();
+      zipFd.append("file", zipFile);
+      zipFd.append("parent_part_number", zipParentPn);
+      const zipRes = await fetch("/api/rafael-zip", {
+        method: "POST",
+        body: zipFd,
+      });
+      const zipJson = await zipRes.json();
+      if (!zipRes.ok) {
+        setZipErrors(apiErrorMessages(zipJson, "שגיאה בפענוח ה-ZIP"));
+        return;
       }
+      const parsedZip = zipJson as ZipResponse;
+
+      setData(pdfData);
+      setZipData(parsedZip);
+      setSuccess(
+        `הנתונים חולצו בהצלחה – נמצאו ${pdfData.rows.length} שורות אספקה ו-${parsedZip.rows.length} שורות PLR`,
+      );
     } catch {
-      setError(appendDataCheckHint("שגיאה בתקשורת עם השרת", "rafael"));
+      if (step === "zip") {
+        setZipErrors(["שגיאה בתקשורת עם השרת בעת עיבוד ה-ZIP"]);
+      } else {
+        setError(appendDataCheckHint("שגיאה בתקשורת עם השרת", "rafael"));
+      }
     } finally {
-      setLoading(false);
+      setProcessingStep(null);
     }
   }
 
@@ -362,42 +382,11 @@ export default function RafaelTab() {
     );
   }
 
-  async function extractZip(selectedZipFile: File, selectedParentPn: string) {
-    setZipLoading(true);
-    setZipErrors([]);
-    setZipData(null);
-
-    try {
-      const fd = new FormData();
-      fd.append("file", selectedZipFile);
-      fd.append("parent_part_number", selectedParentPn);
-      const res = await fetch("/api/rafael-zip", { method: "POST", body: fd });
-      const json = await res.json();
-      if (!res.ok) {
-        setZipErrors(apiErrorMessages(json, "שגיאה בפענוח ה-ZIP"));
-        return;
-      }
-      setZipData(json as ZipResponse);
-    } catch {
-      setZipErrors(["שגיאה בתקשורת עם השרת בעת עיבוד ה-ZIP"]);
-    } finally {
-      setZipLoading(false);
-    }
-  }
-
-  async function handleZipExtract() {
-    if (!zipFile) return;
-    await extractZip(zipFile, parentPn);
-  }
-
   function handleNewRun() {
     setFile(null);
-    setData(null);
-    setError(null);
-    setSuccess(null);
     setZipFile(null);
-    setZipData(null);
-    setZipErrors([]);
+    setProcessingStep(null);
+    clearResults();
   }
 
   const showNewRun = Boolean(
@@ -424,32 +413,28 @@ export default function RafaelTab() {
       <RafaelFilesDropzone
         pdfFile={file}
         zipFile={zipFile}
-        disabled={loading || zipLoading}
+        disabled={isProcessing}
         showNewRun={showNewRun}
         onPdfFile={handleFile}
         onZipFile={handleZipFile}
-        onError={(msg) => setError(msg)}
+        onError={handleUploadError}
         onNewRun={handleNewRun}
       />
 
-      {file && (
-        <button
-          type="button"
-          onClick={handleExtract}
-          disabled={loading || zipLoading}
-          className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {loading || zipLoading
-            ? zipLoading
-              ? "מעבד ZIP..."
-              : "מעבד קובץ..."
-            : zipFile
-              ? "חלץ PDF ו-ZIP"
-              : "חלץ נתוני PDF"}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={handleExtract}
+        disabled={!file || !zipFile || isProcessing}
+        className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {processingStep === "pdf"
+          ? "מעבד PDF..."
+          : processingStep === "zip"
+            ? "מעבד ZIP..."
+            : "חלץ PDF ו-ZIP"}
+      </button>
 
-      {loading && <ProcessingStatus variant="rafael" />}
+      {isProcessing && <ProcessingStatus variant="rafael" />}
 
       {!data && <ZipErrorList errors={zipErrors} />}
 
@@ -465,7 +450,7 @@ export default function RafaelTab() {
         </div>
       )}
 
-      {data && (
+      {data && zipData && (
         <>
           <InfoCard
             items={[
@@ -487,70 +472,48 @@ export default function RafaelTab() {
           </button>
           <DataTable columns={COLUMNS} rows={tableRows} />
 
-          {(zipFile || zipLoading || zipData || zipErrors.length > 0) && (
           <div className="mt-6 flex flex-col gap-4 border-t border-gray-200 pt-4">
             <div className="text-base font-bold text-nativ-dark">
               נתוני ייצור PLR
             </div>
 
-            {zipFile && !zipData && !zipLoading && zipErrors.length === 0 && (
-              <button
-                type="button"
-                onClick={handleZipExtract}
-                disabled={zipLoading}
-                className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {zipLoading ? "מעבד ZIP..." : "חלץ נתוני ייצור"}
-              </button>
-            )}
-
-            {zipLoading && (
-              <div className="text-sm text-gray-500 animate-pulse">מעבד קובץ ZIP...</div>
-            )}
-
-            <ZipErrorList errors={zipErrors} />
-
-            {zipData && (
-              <>
-                <div className="flex items-center gap-3 text-sm text-gray-600">
-                  <span>
-                    נמצאו{" "}
-                    <span className="font-semibold text-nativ-dark">
-                      {zipData.rows.length}
-                    </span>{" "}
-                    שורות מתוך{" "}
-                    <span className="font-semibold">
-                      {zipData.xls_file_count}
-                    </span>{" "}
-                    קבצי XLS
-                    {zipData.matched_file_count > 0 && (
-                      <span className="text-green-700">
-                        {" "}({zipData.matched_file_count} תואמים למק״ט הורה)
-                      </span>
-                    )}
+            <div className="flex items-center gap-3 text-sm text-gray-600">
+              <span>
+                נמצאו{" "}
+                <span className="font-semibold text-nativ-dark">
+                  {zipData.rows.length}
+                </span>{" "}
+                שורות מתוך{" "}
+                <span className="font-semibold">
+                  {zipData.xls_file_count}
+                </span>{" "}
+                קבצי XLS
+                {zipData.matched_file_count > 0 && (
+                  <span className="text-green-700">
+                    {" "}({zipData.matched_file_count} תואמים למק״ט הורה)
                   </span>
-                </div>
+                )}
+              </span>
+            </div>
 
-                <button
-                  type="button"
-                  onClick={handleDownloadPlrTxt}
-                  className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
-                >
-                  הורד קובץ PLR TXT (מופרד בטאב · Excel)
-                </button>
+            <button
+              type="button"
+              onClick={handleDownloadPlrTxt}
+              className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
+            >
+              הורד קובץ PLR TXT (מופרד בטאב · Excel)
+            </button>
 
-                <DataTable
-                  columns={PLR_COLUMNS}
-                  rows={zipData.rows.map((r) => ({
-                    "Operation Sequence": r.operation_sequence,
-                    "Component Item": r.component_item,
-                    "QTY": r.qty,
-                  }))}
-                />
-              </>
-            )}
+            <DataTable
+              columns={PLR_COLUMNS}
+              rows={zipData.rows.map((r) => ({
+                "מספר שורה": r.row_number,
+                "Operation Sequence": r.operation_sequence,
+                "Component Item": r.component_item,
+                "QTY": r.qty,
+              }))}
+            />
           </div>
-          )}
         </>
       )}
     </div>
