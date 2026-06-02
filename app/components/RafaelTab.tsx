@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import FileDropzone from "./FileDropzone";
+import { useDropzone, type Accept } from "react-dropzone";
 import InfoCard from "./InfoCard";
 import DataTable from "./DataTable";
 import ProcessingStatus from "./ProcessingStatus";
@@ -34,19 +34,29 @@ type RafaelResponse = {
 };
 
 type PlrRow = {
-  row_number: number;
   operation_sequence: string;
   component_item: string;
+  qty: string;
 };
 
 type ZipResponse = {
   rows: PlrRow[];
   matched_file_count: number;
-  total_file_count: number;
-  warnings: string[];
+  plreport_zip_count: number;
+  xls_file_count: number;
+  txt_base64: string;
+  txt_filename: string;
 };
 
-const PLR_COLUMNS = ["#", "Operation Sequence", "Component Item"];
+const PLR_COLUMNS = ["Operation Sequence", "Component Item", "QTY"];
+
+const RAFAEL_UPLOAD_ACCEPT: Accept = {
+  "application/pdf": [".pdf"],
+  "application/zip": [".zip"],
+  "application/x-zip-compressed": [".zip"],
+  "multipart/x-zip": [".zip"],
+  "application/octet-stream": [".pdf", ".zip"],
+};
 
 /** Human-readable Hebrew for buyer field: success, infra failure, or weak OCR. */
 function rafaelBuyerDisplayLabel(
@@ -122,6 +132,214 @@ function rafaelBuyerDisplayLabel(
   return t || "—";
 }
 
+function apiErrorMessages(json: unknown, fallback: string): string[] {
+  if (json && typeof json === "object") {
+    const record = json as Record<string, unknown>;
+    const raw = record.error ?? record.detail;
+    if (Array.isArray(raw)) {
+      const messages = raw
+        .map((item) => String(item).trim())
+        .filter((item) => item.length > 0);
+      if (messages.length > 0) return messages;
+    }
+    if (typeof raw === "string" && raw.trim()) {
+      return [raw.trim()];
+    }
+  }
+  return [fallback];
+}
+
+function ZipErrorList({ errors }: { errors: string[] }) {
+  if (errors.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
+      <div className="font-semibold">שגיאה בפענוח ה-ZIP:</div>
+      {errors.length === 1 ? (
+        <div className="mt-1">{errors[0]}</div>
+      ) : (
+        <ul className="mt-1 list-inside list-disc space-y-0.5">
+          {errors.map((msg, i) => (
+            <li key={i}>{msg}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+type RafaelFilesDropzoneProps = {
+  pdfFile: File | null;
+  zipFile: File | null;
+  disabled?: boolean;
+  showNewRun: boolean;
+  onPdfFile: (file: File | null) => void;
+  onZipFile: (file: File | null) => void;
+  onError: (message: string) => void;
+  onNewRun: () => void;
+};
+
+function fileKind(file: File | null | undefined): "pdf" | "zip" | null {
+  const name = typeof file?.name === "string" ? file.name.toLowerCase() : "";
+  if (name.endsWith(".pdf")) return "pdf";
+  if (name.endsWith(".zip")) return "zip";
+  return null;
+}
+
+function uploadBatchError(files: Array<File | null | undefined>): string | null {
+  if (files.length > 2) {
+    return "ניתן להעלות עד שני קבצים: PDF אחד ו-ZIP אחד.";
+  }
+
+  if (files.some((file) => !fileKind(file))) {
+    return "סוג קובץ לא תקין. יש להעלות PDF ו/או ZIP בלבד.";
+  }
+
+  const pdfCount = files.filter((file) => fileKind(file) === "pdf").length;
+  const zipCount = files.filter((file) => fileKind(file) === "zip").length;
+  if (pdfCount > 1 || zipCount > 1) {
+    return "יש להעלות לכל היותר קובץ PDF אחד וקובץ ZIP אחד.";
+  }
+
+  return null;
+}
+
+function RafaelFilesDropzone({
+  pdfFile,
+  zipFile,
+  disabled,
+  showNewRun,
+  onPdfFile,
+  onZipFile,
+  onError,
+  onNewRun,
+}: RafaelFilesDropzoneProps) {
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    accept: RAFAEL_UPLOAD_ACCEPT,
+    multiple: true,
+    maxFiles: 2,
+    maxSize: 50 * 1024 * 1024,
+    disabled,
+    validator: (file) => {
+      if (!fileKind(file)) {
+        return {
+          code: "file-invalid-type",
+          message: "PDF or ZIP extension required",
+        };
+      }
+      return null;
+    },
+    onDrop: (accepted, rejected) => {
+      const droppedFiles = [
+        ...accepted,
+        ...rejected.map((rejection) => rejection.file),
+      ];
+      const batchError = uploadBatchError(droppedFiles);
+      if (batchError) {
+        onError(batchError);
+        return;
+      }
+
+      const tooLarge = rejected.some((rejection) =>
+        rejection.errors.some((error) => error.code === "file-too-large"),
+      );
+      if (tooLarge) {
+        onError("הקובץ גדול מדי. יש להעלות כל קובץ עד 50MB.");
+        return;
+      }
+
+      if (rejected.length > 0) {
+        onError("סוג קובץ לא תקין. יש להעלות PDF ו/או ZIP בלבד.");
+        return;
+      }
+
+      const pdfs = accepted.filter((candidate) => fileKind(candidate) === "pdf");
+      const zips = accepted.filter((candidate) => fileKind(candidate) === "zip");
+      if (pdfs[0]) onPdfFile(pdfs[0]);
+      if (zips[0]) onZipFile(zips[0]);
+    },
+    onDropRejected: (rejections) => {
+      const code = rejections[0]?.errors?.[0]?.code ?? "";
+      if (code === "file-too-large") {
+        onError("הקובץ גדול מדי. יש להעלות כל קובץ עד 50MB.");
+      } else if (code === "too-many-files") {
+        onError("ניתן להעלות עד שני קבצים: PDF אחד ו-ZIP אחד.");
+      } else {
+        onError("סוג קובץ לא תקין. יש להעלות PDF ו/או ZIP בלבד.");
+      }
+    },
+  });
+
+  return (
+    <div className="space-y-3">
+      <div
+        {...getRootProps()}
+        className={`w-full cursor-pointer rounded-xl border-2 border-dashed bg-white px-5 py-8 text-center shadow-sm transition-colors ${
+          isDragActive
+            ? "border-nativ-gold bg-nativ-gold/5"
+            : "border-gray-200 hover:border-nativ-gold/50 hover:bg-nativ-gold/5"
+        } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
+      >
+        <input {...getInputProps()} />
+        <p className="text-sm font-semibold text-gray-900">
+          גרור לכאן PDF של RFQ ו-ZIP של נתוני ייצור או לחץ לבחירה
+        </p>
+        <div className="mt-3 space-y-1 text-xs text-gray-600">
+          {pdfFile || zipFile ? (
+            <>
+              {pdfFile ? (
+                <p>
+                  PDF: <span className="font-semibold text-nativ-gold">{pdfFile.name}</span>
+                </p>
+              ) : (
+                <p className="text-gray-400">PDF חסר</p>
+              )}
+              {zipFile ? (
+                <p>
+                  ZIP: <span className="font-semibold text-nativ-gold">{zipFile.name}</span>
+                </p>
+              ) : (
+                <p className="text-gray-400">ZIP חסר</p>
+              )}
+            </>
+          ) : (
+            <p>PDF ו-ZIP בלבד · אפשר להעלות ביחד או אחד-אחד</p>
+          )}
+        </div>
+      </div>
+
+      {showNewRun ? (
+        <button
+          type="button"
+          onClick={onNewRun}
+          className="w-full rounded-lg border border-nativ-dark/20 bg-white px-4 py-2.5 font-semibold text-nativ-dark shadow-sm transition-colors hover:bg-gray-50"
+        >
+          להרצה חדשה
+        </button>
+      ) : null}
+
+      <div className="flex items-start gap-2 rounded-lg border border-nativ-gold/20 bg-nativ-gold/5 px-4 py-3 text-sm text-nativ-dark/80">
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          className="mt-0.5 h-5 w-5 shrink-0 text-nativ-gold"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        >
+          <rect x="5" y="11" width="14" height="10" rx="2" />
+          <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+        </svg>
+        <p>
+          אבטחת מידע תעשייתית: ניתוח הקבצים מתבצע בשרת מקומי. הקבצים אינם
+          נשמרים, ואינם משותפים עם שום צד שלישי
+        </p>
+      </div>
+    </div>
+  );
+}
+
 const COLUMNS = [
   "מספר שורה",
   "מספר בלם",
@@ -144,7 +362,7 @@ export default function RafaelTab() {
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [zipLoading, setZipLoading] = useState(false);
   const [zipData, setZipData] = useState<ZipResponse | null>(null);
-  const [zipError, setZipError] = useState<string | null>(null);
+  const [zipErrors, setZipErrors] = useState<string[]>([]);
 
   /** First rafael part number from the PDF result — used as the sort key for PLR files. */
   const parentPn = useMemo(() => {
@@ -157,16 +375,15 @@ export default function RafaelTab() {
     setData(null);
     setError(null);
     setSuccess(null);
-    // Reset ZIP data when a new PDF is chosen
-    setZipFile(null);
     setZipData(null);
-    setZipError(null);
+    setZipErrors([]);
   }
 
   function handleZipFile(f: File | null) {
     setZipFile(f);
+    setError(null);
     setZipData(null);
-    setZipError(null);
+    setZipErrors([]);
   }
 
   async function handleExtract() {
@@ -175,6 +392,8 @@ export default function RafaelTab() {
     setError(null);
     setSuccess(null);
     setData(null);
+    setZipData(null);
+    setZipErrors([]);
 
     try {
       const fd = new FormData();
@@ -182,19 +401,19 @@ export default function RafaelTab() {
       const res = await fetch("/api/rafael-bom", { method: "POST", body: fd });
       const json = await res.json();
       if (!res.ok) {
-        const detail =
-          typeof json?.error === "string"
-            ? json.error
-            : typeof json?.detail === "string"
-              ? json.detail
-              : undefined;
+        const detail = apiErrorMessages(json, "שגיאה בפענוח ה-PDF")[0];
         setError(appendDataCheckHint(detail, "rafael"));
         return;
       }
-      setData(json as RafaelResponse);
+      const pdfData = json as RafaelResponse;
+      setData(pdfData);
       setSuccess(
         `הנתונים חולצו בהצלחה – נמצאו ${json.rows.length} שורות אספקה`,
       );
+      if (zipFile) {
+        const zipParentPn = (pdfData.rows?.[0]?.["מקט רפאל"] || "").trim();
+        await extractZip(zipFile, zipParentPn);
+      }
     } catch {
       setError(appendDataCheckHint("שגיאה בתקשורת עם השרת", "rafael"));
     } finally {
@@ -211,34 +430,41 @@ export default function RafaelTab() {
     );
   }
 
-  async function handleZipExtract() {
-    if (!zipFile) return;
+  function handleDownloadPlrTxt() {
+    if (!zipData) return;
+    downloadBase64(
+      zipData.txt_base64,
+      zipData.txt_filename,
+      "text/plain;charset=windows-1255",
+    );
+  }
+
+  async function extractZip(selectedZipFile: File, selectedParentPn: string) {
     setZipLoading(true);
-    setZipError(null);
+    setZipErrors([]);
     setZipData(null);
 
     try {
       const fd = new FormData();
-      fd.append("file", zipFile);
-      fd.append("parent_part_number", parentPn);
+      fd.append("file", selectedZipFile);
+      fd.append("parent_part_number", selectedParentPn);
       const res = await fetch("/api/rafael-zip", { method: "POST", body: fd });
       const json = await res.json();
       if (!res.ok) {
-        const detail =
-          typeof json?.error === "string"
-            ? json.error
-            : typeof json?.detail === "string"
-              ? json.detail
-              : "שגיאה בפענוח ה-ZIP";
-        setZipError(detail);
+        setZipErrors(apiErrorMessages(json, "שגיאה בפענוח ה-ZIP"));
         return;
       }
       setZipData(json as ZipResponse);
     } catch {
-      setZipError("שגיאה בתקשורת עם השרת בעת עיבוד ה-ZIP");
+      setZipErrors(["שגיאה בתקשורת עם השרת בעת עיבוד ה-ZIP"]);
     } finally {
       setZipLoading(false);
     }
+  }
+
+  async function handleZipExtract() {
+    if (!zipFile) return;
+    await extractZip(zipFile, parentPn);
   }
 
   function handleNewRun() {
@@ -248,10 +474,12 @@ export default function RafaelTab() {
     setSuccess(null);
     setZipFile(null);
     setZipData(null);
-    setZipError(null);
+    setZipErrors([]);
   }
 
-  const showNewRun = Boolean(data || error || success);
+  const showNewRun = Boolean(
+    data || error || success || zipData || zipErrors.length,
+  );
 
   const buyerDisplay = useMemo(() => {
     if (!data) return "—";
@@ -282,40 +510,41 @@ export default function RafaelTab() {
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-gray-700">
-        העלה קובץ RFQ של רפאל וקבל בשניות את כל שורות האספקה (מק״ט, כמות,
-        שבועות ARO, FAI) מוכנות לשימוש ב-Excel.
+        העלה קובץ RFQ של רפאל וקובץ ZIP של נתוני ייצור כדי לקבל את שורות
+        האספקה ואת טבלת ה-PLR מוכנות לשימוש ב-Excel.
       </p>
 
-      <FileDropzone
-        label="גרור לכאן קובץ RFQ של רפאל (PDF) או לחץ לבחירה"
-        file={file}
-        onFile={handleFile}
+      <RafaelFilesDropzone
+        pdfFile={file}
+        zipFile={zipFile}
+        disabled={loading || zipLoading}
+        showNewRun={showNewRun}
+        onPdfFile={handleFile}
+        onZipFile={handleZipFile}
         onError={(msg) => setError(msg)}
-        disabled={loading}
-        belowDropzone={
-          showNewRun ? (
-            <button
-              type="button"
-              onClick={handleNewRun}
-              className="w-full rounded-lg border border-nativ-dark/20 bg-white px-4 py-2.5 font-semibold text-nativ-dark shadow-sm transition-colors hover:bg-gray-50"
-            >
-              להרצה חדשה
-            </button>
-          ) : null
-        }
+        onNewRun={handleNewRun}
       />
 
       {file && (
         <button
+          type="button"
           onClick={handleExtract}
-          disabled={loading}
+          disabled={loading || zipLoading}
           className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {loading ? "מעבד קובץ..." : "חלץ נתונים"}
+          {loading || zipLoading
+            ? zipLoading
+              ? "מעבד ZIP..."
+              : "מעבד קובץ..."
+            : zipFile
+              ? "חלץ PDF ו-ZIP"
+              : "חלץ נתוני PDF"}
         </button>
       )}
 
       {loading && <ProcessingStatus variant="rafael" />}
+
+      {!data && <ZipErrorList errors={zipErrors} />}
 
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
@@ -351,30 +580,13 @@ export default function RafaelTab() {
           </button>
           <DataTable columns={COLUMNS} rows={tableRows} />
 
-          {/* ── ZIP / PLR section ─────────────────────────────── */}
-          <div className="mt-6 border-t border-gray-200 pt-4 flex flex-col gap-4">
+          {(zipFile || zipLoading || zipData || zipErrors.length > 0) && (
+          <div className="mt-6 flex flex-col gap-4 border-t border-gray-200 pt-4">
             <div className="text-base font-bold text-nativ-dark">
-              נתוני ייצור (ZIP)
+              נתוני ייצור PLR
             </div>
-            <p className="text-sm text-gray-600">
-              גרור לכאן את קובץ ה-ZIP עם נתוני הייצור (TransferRequest_*.zip או *_PRODUCT.ZIP) כדי לחלץ את רשימת הרכיבים.
-              {parentPn ? (
-                <span className="mr-1 font-medium text-nativ-dark">
-                  מק״ט הורה: {parentPn}
-                </span>
-              ) : null}
-            </p>
 
-            <FileDropzone
-              label="גרור לכאן ZIP של נתוני ייצור או לחץ לבחירה"
-              file={zipFile}
-              onFile={handleZipFile}
-              onError={(msg) => setZipError(msg)}
-              acceptKind="zip"
-              disabled={zipLoading}
-            />
-
-            {zipFile && (
+            {zipFile && !zipData && !zipLoading && zipErrors.length === 0 && (
               <button
                 type="button"
                 onClick={handleZipExtract}
@@ -389,11 +601,7 @@ export default function RafaelTab() {
               <div className="text-sm text-gray-500 animate-pulse">מעבד קובץ ZIP...</div>
             )}
 
-            {zipError && (
-              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
-                שגיאה בפענוח ה-ZIP: {zipError}
-              </div>
-            )}
+            <ZipErrorList errors={zipErrors} />
 
             {zipData && (
               <>
@@ -404,8 +612,10 @@ export default function RafaelTab() {
                       {zipData.rows.length}
                     </span>{" "}
                     שורות מתוך{" "}
-                    <span className="font-semibold">{zipData.total_file_count}</span>{" "}
-                    קבצי PLR
+                    <span className="font-semibold">
+                      {zipData.xls_file_count}
+                    </span>{" "}
+                    קבצי XLS
                     {zipData.matched_file_count > 0 && (
                       <span className="text-green-700">
                         {" "}({zipData.matched_file_count} תואמים למק״ט הורה)
@@ -414,28 +624,26 @@ export default function RafaelTab() {
                   </span>
                 </div>
 
-                {zipData.warnings.length > 0 && (
-                  <div className="rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-2.5 text-sm text-yellow-800">
-                    <div className="font-semibold mb-1">אזהרות:</div>
-                    <ul className="list-disc list-inside space-y-0.5">
-                      {zipData.warnings.map((w, i) => (
-                        <li key={i}>{w}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                <button
+                  type="button"
+                  onClick={handleDownloadPlrTxt}
+                  className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
+                >
+                  הורד קובץ PLR TXT (מופרד בטאב · Excel)
+                </button>
 
                 <DataTable
                   columns={PLR_COLUMNS}
                   rows={zipData.rows.map((r) => ({
-                    "#": r.row_number,
                     "Operation Sequence": r.operation_sequence,
                     "Component Item": r.component_item,
+                    "QTY": r.qty,
                   }))}
                 />
               </>
             )}
           </div>
+          )}
         </>
       )}
     </div>

@@ -1,6 +1,6 @@
 # Rafael PLR / ZIP — Phase 2 (V.6.1)
 
-מסמך זה מתאר את מבנה ה-ZIP הנתמך, שרשרת ה-fallback לפענוח הקבצים, עמודות הפלט, וקודי השגיאה.
+מסמך זה מתאר את מבנה ה-ZIP הנתמך, פענוח קבצי ה-XLS, עמודות הפלט, וקודי השגיאה.
 
 ---
 
@@ -11,7 +11,7 @@ TransferRequest_*.zip          ← עטיפה חיצונית (אופציונלי
 └── <id>_1_PRODUCT.ZIP         ← ה-ZIP האמיתי
     └── data/files/            ← אותיות קטנות
         ├── PLReport_<PN>_*.zip  ← כל PLR הוא ZIP מקונן
-        │   └── <PN>_<rev>_*.xls ← CDFV2 בינארי או dirty CSV
+        │   └── *.xls            ← קובץ XLS בינארי אחד או יותר
         ├── *_MLEDR Report_*.xls   ← מתעלמים (לא נפרס)
         └── *.pdf / *.stp / …
 ```
@@ -19,24 +19,22 @@ TransferRequest_*.zip          ← עטיפה חיצונית (אופציונלי
 ### כללים לניתוב
 - אם ה-ZIP שהועלה מכיל חבר **יחיד** שמסתיים ב-`_PRODUCT.ZIP` — נכנסים לתוכו.
 - אחרת מניחים שה-ZIP שהועלה הוא עצמו ה-Product ZIP.
-- מתחת ל-`data/files/` נבחרים **רק** קבצים עם סיומת `.zip` ששם הקובץ מתחיל ב-`PLReport` או `PLR` (לא רגיש לרישיות).
+- מתחת ל-`data/files/` נבחרים **רק** קבצים עם סיומת `.zip` ששם הקובץ מתחיל ב-`PLReport` (לא רגיש לרישיות).
 - קבצי `.xls` / `.csv` **שטוחים** ישירות ב-`data/files/` — **לא** נפרסים.
-- כל ZIP מקונן נפתח בזיכרון; מתוכו נלקח ה-`.xls` (בדרך כלל CSV מוסווה) ונפרס.
+- כל ZIP מקונן נפתח בזיכרון; כל קובץ `.xls` שבתוכו נפרס.
+- אם ZIP מקונן מסוג `PLReport*.zip` לא מכיל אפילו קובץ `.xls` אחד — זו שגיאה.
 - שורות נתונים עם עמודה ריקה מובילה (למשל `,1.0,,316150321,...`) נתמכות — האינדקסים נקבעים לפי שורת ה-header.
 
 ---
 
-## שרשרת Fallback לפענוח PLR
+## פענוח PLR
 
-1. **CSV (Pass 1)**: `csv.reader` עם מפריד פסיק.  
-   מאתר שורת `Part List for: <PN>` ושורת header עם `Operation Sequence` + `Component Item`.  
-   עובד גם על קבצים שנראים כ-XLS אך הם בעצם CSVs.
+הפענוח הוא XLS בלבד:
 
-2. **Binary XLS (Pass 2)**: `pandas.read_excel(..., engine="xlrd", header=None, dtype=str)`.  
-   נדרש ל-CDFV2 Excel 97–2003.
+`pandas.read_excel(..., engine="xlrd", header=None, dtype=str)`.
 
-3. **XLSX (Pass 3)**: `pandas.read_excel(..., engine="openpyxl", header=None, dtype=str)`.  
-   מופעל רק אם הקובץ מתחיל ב-`PK\x03\x04` (magic bytes של ZIP/XLSX) וה-Passes הקודמים נכשלו.
+הפרסר מאתר שורת `Part List for: <PN>` ואז את טבלת הנתונים לפי header שמכיל את שלוש העמודות:
+`Operation Sequence`, `Component Item`, `QTY`.
 
 ---
 
@@ -44,17 +42,19 @@ TransferRequest_*.zip          ← עטיפה חיצונית (אופציונלי
 
 | שדה               | תיאור                                   |
 |-------------------|-----------------------------------------|
-| `row_number`      | מספר שורה סידורי 1-based עבור כל הפלט. |
 | `operation_sequence` | שדה "Operation Sequence" מה-PLR.    |
 | `component_item`  | שדה "Component Item" מה-PLR.           |
+| `qty`             | שדה "QTY" מה-PLR.                      |
 
 ### מטא-נתונים בפלט
 
 | שדה                  | תיאור                                                                   |
 |----------------------|-------------------------------------------------------------------------|
-| `matched_file_count` | כמה קבצי PLR שה-PN שלהם == `parent_part_number` (שורותיהם בראש הרשימה). |
-| `total_file_count`   | סה״כ קבצי PLR שנמצאו.                                                   |
-| `warnings`           | רשימת אזהרות לא-קריטיות (קבצים מדולגים, PN חסר וכד׳).                  |
+| `matched_file_count` | כמה קבצי XLS שה-PN שלהם == `parent_part_number` (שורותיהם בראש הרשימה). |
+| `plreport_zip_count` | סה״כ קבצי `PLReport*.zip` שנמצאו.                                       |
+| `xls_file_count`     | סה״כ קבצי XLS שנפרסו מתוך קבצי ה-PLReport.                              |
+| `txt_base64`         | קובץ PLR TXT מקודד base64 אחרי encoding ל-`windows-1255`.               |
+| `txt_filename`       | שם קובץ ה-TXT להורדה.                                                   |
 
 ---
 
@@ -72,21 +72,24 @@ TransferRequest_*.zip          ← עטיפה חיצונית (אופציונלי
 |------------------------------------------|------|--------------------------------------------------------------------------------------|
 | ZIP ריק / לא נשלח                        | 400  | `{"detail": "קובץ ZIP ריק."}`                                                       |
 | ZIP פגום (BadZipFile)                    | 400  | `{"detail": "לא ניתן לפתוח את ה-ZIP: …"}`                                           |
-| אין `data/files/PLR*` בתוך ה-ZIP         | 200  | `{"rows": [], "warnings": ["לא נמצאו קבצי PLReport_* …"]}`                          |
-| קובץ PLR ללא שורת `Part List for:`       | 200  | `{"rows": [], "warnings": ["<filename>: לא נמצאה שורת Part List …"]}`               |
-| קובץ PLR ללא שורות נתונים מתחת ל-header | 200  | `{"rows": [], "warnings": ["<filename>: לא נמצאו שורות נתונים …"]}`                 |
-| ZIP פנימי מקונן פגום                     | 200  | `{"rows": [], "warnings": ["<filename>: הזיפ המקונן פגום …"]}`                     |
-| ZIP גדול מ-50 MB                         | 200  | `{"rows": [], "warnings": ["ZIP גדול מדי (N MB); המקסימום הוא 50 MB."]}`            |
+| אין `data/files/PLReport*.zip` בתוך ה-ZIP | 400  | `{"detail": "לא נמצאו קבצי PLReport*.zip בתוך data/files/."}`                      |
+| `PLReport*.zip` ללא XLS                  | 400  | `{"detail": "<filename>: לא נמצא קובץ XLS בתוך ה-PLReport."}`                      |
+| קובץ XLS ללא שורת `Part List for:`       | 400  | `{"detail": "<filename>: לא נמצאה שורת Part List …"}`                              |
+| קובץ XLS ללא header נדרש                 | 400  | `{"detail": "<filename>: לא נמצאה טבלת PLR עם העמודות …"}`                         |
+| קובץ XLS ללא שורות נתונים                | 400  | `{"detail": "<filename>: לא נמצאו שורות נתונים …"}`                                |
+| ZIP פנימי מקונן פגום                     | 400  | `{"detail": "<filename>: הזיפ המקונן פגום …"}`                                     |
+| ZIP גדול מ-50 MB                         | 400  | `{"detail": "ZIP גדול מדי (N MB); המקסימום הוא 50 MB."}`                          |
 | auth נדחה                                | 401  | `{"detail": "Unauthorized"}`                                                         |
 
 ---
 
 ## אינטגרציה בצד הלקוח
 
-1. **שני Dropzones**: אחד ל-PDF (קיים) ואחד ל-ZIP (חדש, מופיע רק לאחר הצלחת ה-PDF).
-2. **סדר עיבוד**: PDF ראשון → שמירת `parentPn` ב-state → העלאת ZIP → קריאה ל-`/api/rafael-zip`.
-3. **טבלה נפרדת**: PLR מוצג מתחת לטבלת RFQ הקיימת (עמודות: `#`, `Operation Sequence`, `Component Item`).
-4. **שגיאה מבודדת**: כשל ב-ZIP מציג badge שגיאה ליד ה-Dropzone של ZIP בלבד; תוצאות ה-PDF לא מושפעות.
+1. **Dropzone אחד**: אותו אזור העלאה מקבל PDF ו-ZIP ביחד או אחד-אחד.
+2. **סדר עיבוד**: PDF ראשון → שמירת `parentPn` → ZIP → קריאה ל-`/api/rafael-zip`.
+3. **טבלה נפרדת**: PLR מוצג מתחת לטבלת RFQ הקיימת (עמודות: `Operation Sequence`, `Component Item`, `QTY`).
+4. **ייצוא**: PLR יורד כ-TXT מופרד בטאבים, מקודד `windows-1255`.
+5. **שגיאה מבודדת**: כשל ב-ZIP מוצג באזור ה-PLR; תוצאות ה-PDF לא נמחקות.
 
 ---
 

@@ -1,311 +1,289 @@
-"""
-Tests for api/parse_rafael_plr_zip.py — all in-memory (no disk files).
-"""
+"""Tests for api/parse_rafael_plr_zip.py."""
+
 from __future__ import annotations
 
-import csv
 import io
+import os
+import sys
 import unittest
 import zipfile
+from pathlib import Path
+from unittest.mock import patch
 
-
-# ---------------------------------------------------------------------------
-# Helpers to build synthetic ZIPs / payloads in memory
-# ---------------------------------------------------------------------------
-
-def _make_csv_plr(part_number: str, rows: list[tuple[str, str]]) -> bytes:
-    """Build a minimal PLR-style CSV payload."""
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow([f"Part List for: {part_number}", "Report Date: 01-01-2026"])
-    w.writerow(["PLM"])
-    w.writerow([])
-    w.writerow(["Description:", "Release Status"])
-    w.writerow([])
-    w.writerow(["Some Part Name", "Released"])
-    w.writerow([])
-    w.writerow([])
-    w.writerow([
-        "Operation Sequence", "Component Item", "Component Description",
-        "Item Type", "UOM", "QTY",
-    ])
-    for op, comp in rows:
-        w.writerow([op, comp, "some desc", "type", "EA", "1"])
-    return buf.getvalue().encode("utf-8")
-
-
-def _make_inner_zip(xls_name: str, xls_bytes: bytes) -> bytes:
-    """Wrap xls_bytes in a single-member ZIP (like PLReport_*.zip)."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(xls_name, xls_bytes)
-    return buf.getvalue()
-
-
-def _make_product_zip(plr_files: dict[str, bytes]) -> bytes:
-    """Build a *_PRODUCT.ZIP with data/files/ structure.
-
-    ``plr_files`` maps ``PLReport_<PN>_*.zip`` → bytes of the inner zip.
-    """
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name, data in plr_files.items():
-            zf.writestr(f"data/files/{name}", data)
-    return buf.getvalue()
-
-
-def _make_dirty_csv_plr_with_quoted_newline_header(
-    part_number: str,
-    rows: list[tuple[str, str]],
-) -> bytes:
-    """PLM-style CSV: header cell contains a literal newline inside quotes."""
-    buf = io.StringIO()
-    w = csv.writer(buf, lineterminator="\n")
-    w.writerow([f"Part List for: {part_number}", "Report Date: 01-01-2026"])
-    w.writerow(["", "Fixed\nQTY", "Operation Sequence", "", "Component Item", "Desc"])
-    w.writerow([])
-    for op, comp in rows:
-        # Align with header indices: op=2, component item=4
-        w.writerow(["", "", op, "", comp, "POLYIMIDE"])
-    return buf.getvalue().encode("utf-8")
-
-
-def _make_csv_plr_leading_empty_col(
-    part_number: str,
-    rows: list[tuple[str, str]],
-) -> bytes:
-    """PLR CSV where data rows start with a leading empty column (Rafael export shape)."""
-    lines = [
-        f"Part List for: {part_number},Report Date: 01-01-2026",
-        ",Operation Sequence,,Component Item,Component Description",
-    ]
-    for op, comp in rows:
-        lines.append(f",{op},,{comp},,POLYIMIDE,,,")
-    return "\n".join(lines).encode("utf-8")
-
-
-def _make_transfer_zip(product_zip_bytes: bytes, product_zip_name: str = "12345_1_PRODUCT.ZIP") -> bytes:
-    """Wrap a product ZIP in the TransferRequest outer wrapper."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(product_zip_name, product_zip_bytes)
-    return buf.getvalue()
-
-
-# ---------------------------------------------------------------------------
-# Import the module under test
-# ---------------------------------------------------------------------------
-
-import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from parse_rafael_plr_zip import extract_plr_rows_from_zip  # noqa: E402
+
+from parse_rafael_plr_zip import (  # noqa: E402
+    PlrZipParseError,
+    _parse_plr_from_dataframe,
+    extract_plr_rows_from_zip,
+    format_plr_tsv_body,
+)
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+def _make_inner_zip(files: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
 
-class TestDirectProductZip(unittest.TestCase):
-    """Upload the _PRODUCT.ZIP directly (no outer wrapper)."""
 
-    def _zip(self, plr_map: dict) -> bytes:
-        return _make_product_zip(plr_map)
+def _make_product_zip(
+    plreport_files: dict[str, bytes],
+    loose_files: dict[str, bytes] | None = None,
+    data_files_prefix: str = "data/files",
+) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in plreport_files.items():
+            zf.writestr(f"{data_files_prefix.rstrip('/')}/{name}", data)
+        for name, data in (loose_files or {}).items():
+            zf.writestr(f"{data_files_prefix.rstrip('/')}/{name}", data)
+    return buf.getvalue()
 
-    def test_basic_extraction(self):
-        csv_bytes = _make_csv_plr("BD01006", [("10", "510150130"), ("20", "510150131")])
-        inner_zip = _make_inner_zip("BD01006_rev_abc.xls", csv_bytes)
-        product = self._zip({"PLReport_BD01006_01_x.zip": inner_zip})
-        result = extract_plr_rows_from_zip(product, "BD01006")
-        self.assertEqual(result["total_file_count"], 1)
+
+def _make_transfer_zip(product_zip: bytes, product_name: str = "123_1_PRODUCT.ZIP") -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(product_name, product_zip)
+    return buf.getvalue()
+
+
+def _row(op: str, component: str, qty: str) -> dict[str, str]:
+    return {
+        "operation_sequence": op,
+        "component_item": component,
+        "qty": qty,
+    }
+
+
+class TestZipTraversal(unittest.TestCase):
+    def test_basic_direct_product_zip(self):
+        inner = _make_inner_zip({"AAA_36_120000000.xls": b"AAA"})
+        product = _make_product_zip({"PLReport_AAA_01.zip": inner})
+
+        def fake_parse(data: bytes):
+            self.assertEqual(data, b"AAA")
+            return "AAA", [_row("1", "C1", "2")]
+
+        with patch("parse_rafael_plr_zip._parse_plr_xls_payload", side_effect=fake_parse):
+            result = extract_plr_rows_from_zip(product, "AAA")
+
+        self.assertEqual(result["plreport_zip_count"], 1)
+        self.assertEqual(result["xls_file_count"], 1)
         self.assertEqual(result["matched_file_count"], 1)
-        rows = result["rows"]
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0]["operation_sequence"], "10")
-        self.assertEqual(rows[0]["component_item"], "510150130")
-        self.assertEqual(rows[0]["row_number"], 1)
-        self.assertEqual(rows[1]["row_number"], 2)
+        self.assertEqual(result["rows"][0]["operation_sequence"], "1")
+        self.assertEqual(result["rows"][0]["component_item"], "C1")
+        self.assertEqual(result["rows"][0]["qty"], "2")
 
-    def test_parent_pn_sorted_to_top(self):
-        csv_a = _make_csv_plr("AAA", [("10", "COMP_A1"), ("20", "COMP_A2")])
-        csv_b = _make_csv_plr("BBB", [("10", "COMP_B1")])
-        inner_a = _make_inner_zip("AAA_rev.xls", csv_a)
-        inner_b = _make_inner_zip("BBB_rev.xls", csv_b)
-        product = self._zip({
-            "PLReport_AAA_01_x.zip": inner_a,
-            "PLReport_BBB_01_x.zip": inner_b,
-        })
-        result = extract_plr_rows_from_zip(product, "BBB")
-        rows = result["rows"]
-        self.assertEqual(len(rows), 3)
-        self.assertEqual(result["matched_file_count"], 1)
-        # BBB should be first (parent match)
-        self.assertEqual(rows[0]["component_item"], "COMP_B1")
-        self.assertEqual(rows[0]["row_number"], 1)
-        # AAA rows follow
-        self.assertIn(rows[1]["component_item"], ("COMP_A1", "COMP_A2"))
-
-    def test_no_parent_match_still_returns_all(self):
-        csv_a = _make_csv_plr("AAA", [("10", "COMP_A")])
-        inner_a = _make_inner_zip("AAA_rev.xls", csv_a)
-        product = self._zip({"PLReport_AAA_01_x.zip": inner_a})
-        result = extract_plr_rows_from_zip(product, "DOES_NOT_EXIST")
-        self.assertEqual(result["matched_file_count"], 0)
-        self.assertEqual(len(result["rows"]), 1)
-
-    def test_row_numbers_sequential(self):
-        csv_a = _make_csv_plr("AAA", [("10", "C1"), ("20", "C2"), ("30", "C3")])
-        inner_a = _make_inner_zip("AAA_rev.xls", csv_a)
-        product = self._zip({"PLReport_AAA_01_x.zip": inner_a})
-        result = extract_plr_rows_from_zip(product, "AAA")
-        nums = [r["row_number"] for r in result["rows"]]
-        self.assertEqual(nums, [1, 2, 3])
-
-    def test_empty_parent_pn_returns_all(self):
-        csv_a = _make_csv_plr("AAA", [("10", "C1")])
-        inner_a = _make_inner_zip("AAA_rev.xls", csv_a)
-        product = self._zip({"PLReport_AAA_01_x.zip": inner_a})
-        result = extract_plr_rows_from_zip(product, "")
-        self.assertEqual(len(result["rows"]), 1)
-        self.assertEqual(result["matched_file_count"], 0)
-
-
-class TestTransferRequestWrapper(unittest.TestCase):
-    """TransferRequest_*.zip wrapping the product ZIP."""
-
-    def test_outer_wrapper_unwrapped(self):
-        csv_bytes = _make_csv_plr("PN001", [("1", "COMP1")])
-        inner_zip = _make_inner_zip("PN001_rev.xls", csv_bytes)
-        product = _make_product_zip({"PLReport_PN001_01.zip": inner_zip})
+    def test_transfer_request_wrapper_is_unwrapped(self):
+        inner = _make_inner_zip({"AAA.xls": b"AAA"})
+        product = _make_product_zip({"PLReport_AAA_01.zip": inner})
         transfer = _make_transfer_zip(product)
-        result = extract_plr_rows_from_zip(transfer, "PN001")
-        self.assertEqual(result["total_file_count"], 1)
+
+        with patch(
+            "parse_rafael_plr_zip._parse_plr_xls_payload",
+            return_value=("AAA", [_row("1", "C1", "2")]),
+        ):
+            result = extract_plr_rows_from_zip(transfer, "AAA")
+
+        self.assertEqual(len(result["rows"]), 1)
+        self.assertEqual(result["xls_file_count"], 1)
+
+    def test_dot_slash_data_files_path_is_supported(self):
+        inner = _make_inner_zip({"AAA.xls": b"AAA"})
+        product = _make_product_zip(
+            {"PLReport_AAA_01.zip": inner},
+            data_files_prefix="./data/files",
+        )
+
+        with patch(
+            "parse_rafael_plr_zip._parse_plr_xls_payload",
+            return_value=("AAA", [_row("1", "C1", "2")]),
+        ):
+            result = extract_plr_rows_from_zip(product, "AAA")
+
+        self.assertEqual(result["plreport_zip_count"], 1)
+        self.assertEqual(result["xls_file_count"], 1)
         self.assertEqual(len(result["rows"]), 1)
 
+    def test_multiple_xls_files_inside_one_plreport_are_all_parsed(self):
+        inner = _make_inner_zip(
+            {
+                "PARENT.xls": b"PARENT",
+                "CHILD1.xls": b"CHILD1",
+                "CHILD2.xls": b"CHILD2",
+            }
+        )
+        product = _make_product_zip({"PLReport_PARENT_01.zip": inner})
 
-class TestEdgeCases(unittest.TestCase):
-    """Corrupt / edge-case inputs."""
+        def fake_parse(data: bytes):
+            pn = data.decode("ascii")
+            return pn, [_row("1", f"COMP_{pn}", "1")]
 
-    def test_corrupt_zip_returns_empty_with_warning(self):
-        result = extract_plr_rows_from_zip(b"not a zip at all", "AAA")
-        self.assertEqual(result["rows"], [])
-        self.assertEqual(result["total_file_count"], 0)
-        self.assertTrue(len(result["warnings"]) > 0)
+        with patch("parse_rafael_plr_zip._parse_plr_xls_payload", side_effect=fake_parse):
+            result = extract_plr_rows_from_zip(product, "PARENT")
 
-    def test_no_plr_files_in_product_zip(self):
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("data/files/some_drawing.pdf", b"PDF bytes")
-        result = extract_plr_rows_from_zip(buf.getvalue(), "AAA")
-        self.assertEqual(result["total_file_count"], 0)
-        self.assertEqual(result["rows"], [])
-        self.assertTrue(any("PLReport" in w for w in result["warnings"]))
+        self.assertEqual(result["plreport_zip_count"], 1)
+        self.assertEqual(result["xls_file_count"], 3)
+        self.assertEqual([r["component_item"] for r in result["rows"]], [
+            "COMP_PARENT",
+            "COMP_CHILD1",
+            "COMP_CHILD2",
+        ])
 
-    def test_plr_without_part_list_header_skipped_with_warning(self):
-        no_header_csv = b"just,some,data\n1,2,3\n"
-        inner_zip = _make_inner_zip("BAD_rev.xls", no_header_csv)
-        product = _make_product_zip({"PLReport_BAD_01.zip": inner_zip})
-        result = extract_plr_rows_from_zip(product, "BAD")
-        self.assertEqual(result["rows"], [])
-        self.assertTrue(len(result["warnings"]) > 0)
+    def test_parent_part_number_rows_are_sorted_to_top(self):
+        inner_a = _make_inner_zip({"AAA.xls": b"AAA"})
+        inner_b = _make_inner_zip({"BBB.xls": b"BBB"})
+        product = _make_product_zip(
+            {
+                "PLReport_AAA_01.zip": inner_a,
+                "PLReport_BBB_01.zip": inner_b,
+            }
+        )
 
-    def test_plr_with_header_but_no_data_rows(self):
-        csv_bytes = _make_csv_plr("EMPTY_PN", [])
-        inner_zip = _make_inner_zip("EMPTY_PN_rev.xls", csv_bytes)
-        product = _make_product_zip({"PLReport_EMPTY_01.zip": inner_zip})
-        result = extract_plr_rows_from_zip(product, "EMPTY_PN")
-        self.assertEqual(result["rows"], [])
-        self.assertTrue(len(result["warnings"]) > 0)
+        def fake_parse(data: bytes):
+            pn = data.decode("ascii")
+            return pn, [_row("1", f"COMP_{pn}", "1")]
 
-    def test_corrupted_inner_zip_warns_and_skips(self):
-        product = _make_product_zip({"PLReport_BAD_01.zip": b"corrupted_zip_bytes"})
-        result = extract_plr_rows_from_zip(product, "BAD")
-        self.assertEqual(result["rows"], [])
-        self.assertTrue(len(result["warnings"]) > 0)
+        with patch("parse_rafael_plr_zip._parse_plr_xls_payload", side_effect=fake_parse):
+            result = extract_plr_rows_from_zip(product, "BBB")
 
-    def test_multiple_files_row_numbers_across_files(self):
-        csv_a = _make_csv_plr("PN_A", [("10", "CA1"), ("20", "CA2")])
-        csv_b = _make_csv_plr("PN_B", [("10", "CB1")])
-        inner_a = _make_inner_zip("PN_A.xls", csv_a)
-        inner_b = _make_inner_zip("PN_B.xls", csv_b)
-        product = _make_product_zip({
-            "PLReport_PN_A_01.zip": inner_a,
-            "PLReport_PN_B_01.zip": inner_b,
-        })
-        result = extract_plr_rows_from_zip(product, "PN_A")
-        rows = result["rows"]
-        # PN_A at top (parent), then PN_B
-        self.assertEqual(rows[0]["component_item"], "CA1")
-        self.assertEqual(rows[1]["component_item"], "CA2")
-        self.assertEqual(rows[2]["component_item"], "CB1")
-        self.assertEqual([r["row_number"] for r in rows], [1, 2, 3])
-
-    def test_oversized_zip_returns_warning(self):
-        # Pretend bytes > _MAX_ZIP_BYTES by monkeypatching
-        from parse_rafael_plr_zip import _MAX_ZIP_BYTES
-        oversized = b"x" * (_MAX_ZIP_BYTES + 1)
-        result = extract_plr_rows_from_zip(oversized, "AAA")
-        self.assertEqual(result["rows"], [])
-        self.assertTrue(any("גדול" in w for w in result["warnings"]))
-
-    def test_case_insensitive_parent_pn_match(self):
-        csv_bytes = _make_csv_plr("bd01006", [("10", "C1")])
-        inner_zip = _make_inner_zip("bd01006_rev.xls", csv_bytes)
-        product = _make_product_zip({"PLReport_bd01006_01.zip": inner_zip})
-        result = extract_plr_rows_from_zip(product, "BD01006")
         self.assertEqual(result["matched_file_count"], 1)
+        self.assertEqual(result["rows"][0]["component_item"], "COMP_BBB")
+        self.assertEqual(result["rows"][1]["component_item"], "COMP_AAA")
 
-    def test_ignores_loose_xls_in_data_files(self):
-        """Standalone .xls in data/files/ must not be parsed — only nested PLReport*.zip."""
-        csv_nested = _make_csv_plr("AAA", [("10", "FROM_NESTED_ZIP")])
-        inner_zip = _make_inner_zip("AAA_rev.xls", csv_nested)
-        csv_loose = _make_csv_plr("WRONG_PN", [("99", "FROM_LOOSE_XLS")])
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("data/files/PLReport_AAA_01.zip", inner_zip)
-            zf.writestr("data/files/Part_MLEDR Report_01.xls", csv_loose)
-        result = extract_plr_rows_from_zip(buf.getvalue(), "AAA")
-        self.assertEqual(len(result["rows"]), 1)
-        self.assertEqual(result["rows"][0]["component_item"], "FROM_NESTED_ZIP")
-        self.assertEqual(result["total_file_count"], 1)
-
-    def test_quoted_newline_in_header_cell(self):
-        """csv.reader must not break when a header field contains \\n inside quotes."""
-        csv_bytes = _make_dirty_csv_plr_with_quoted_newline_header(
-            "BD01006",
-            [("1.0", "316150321"), ("2.0", "316150322")],
-        )
-        inner_zip = _make_inner_zip("BD01006_rev.xls", csv_bytes)
-        product = _make_product_zip({"PLReport_BD01006_01.zip": inner_zip})
-        result = extract_plr_rows_from_zip(product, "BD01006")
-        self.assertEqual(len(result["rows"]), 2)
-        self.assertEqual(result["rows"][0]["component_item"], "316150321")
-        self.assertFalse(
-            any("לא נמצאו שורות נתונים" in w for w in result["warnings"]),
-            msg=result["warnings"],
+    def test_loose_xls_is_ignored_and_no_plreport_is_an_error(self):
+        product = _make_product_zip(
+            {},
+            loose_files={"AAA_MLEDR Report_1.xls": b"loose"},
         )
 
-    def test_leading_empty_column_in_data_rows(self):
-        csv_bytes = _make_csv_plr_leading_empty_col(
-            "BD01006",
-            [("1.0", "316150321"), ("2.0", "316150322")],
-        )
-        inner_zip = _make_inner_zip("BD01006_rev.xls", csv_bytes)
-        product = _make_product_zip({"PLReport_BD01006_01.zip": inner_zip})
-        result = extract_plr_rows_from_zip(product, "BD01006")
-        self.assertEqual(len(result["rows"]), 2)
-        self.assertEqual(result["rows"][0]["operation_sequence"], "1.0")
-        self.assertEqual(result["rows"][0]["component_item"], "316150321")
-        self.assertEqual(result["rows"][1]["component_item"], "316150322")
+        with self.assertRaises(PlrZipParseError) as cm:
+            extract_plr_rows_from_zip(product, "AAA")
 
-    def test_non_zip_plr_name_in_data_files_is_skipped(self):
-        """A PLReport-named .xls (not .zip) in data/files/ must be ignored."""
-        csv_bytes = _make_csv_plr("AAA", [("10", "SHOULD_NOT_APPEAR")])
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("data/files/PLReport_AAA_01.xls", csv_bytes)
-        result = extract_plr_rows_from_zip(buf.getvalue(), "AAA")
-        self.assertEqual(result["rows"], [])
-        self.assertEqual(result["total_file_count"], 0)
+        self.assertTrue(any("PLReport" in msg for msg in cm.exception.messages))
+
+
+class TestErrors(unittest.TestCase):
+    def test_corrupt_outer_zip_is_error(self):
+        with self.assertRaises(PlrZipParseError) as cm:
+            extract_plr_rows_from_zip(b"not a zip", "AAA")
+
+        self.assertTrue(any("לא ניתן לפתוח" in msg for msg in cm.exception.messages))
+
+    def test_corrupt_nested_plreport_zip_is_error(self):
+        product = _make_product_zip({"PLReport_BAD_01.zip": b"not a nested zip"})
+
+        with self.assertRaises(PlrZipParseError) as cm:
+            extract_plr_rows_from_zip(product, "BAD")
+
+        self.assertTrue(any("אינו ZIP" in msg for msg in cm.exception.messages))
+
+    def test_nested_plreport_without_xls_is_error(self):
+        inner = _make_inner_zip({"readme.txt": b"not xls"})
+        product = _make_product_zip({"PLReport_BAD_01.zip": inner})
+
+        with self.assertRaises(PlrZipParseError) as cm:
+            extract_plr_rows_from_zip(product, "BAD")
+
+        self.assertTrue(any("לא נמצא קובץ XLS" in msg for msg in cm.exception.messages))
+
+    def test_unreadable_xls_is_error(self):
+        inner = _make_inner_zip({"AAA.xls": b"not excel"})
+        product = _make_product_zip({"PLReport_AAA_01.zip": inner})
+
+        with self.assertRaises(PlrZipParseError) as cm:
+            extract_plr_rows_from_zip(product, "AAA")
+
+        self.assertTrue(any("לא ניתן לקרוא" in msg for msg in cm.exception.messages))
+
+
+class TestDataFrameParsing(unittest.TestCase):
+    def test_extracts_operation_component_and_qty_from_table(self):
+        import pandas as pd
+
+        df = pd.DataFrame(
+            [
+                ["", "", "Part List for: CF1A1005C"],
+                ["PLM"],
+                [""],
+                ["Description:", "Release Status"],
+                [""],
+                ["", "Operation Sequence", "", "Component Item", "", "QTY"],
+                ["", "1", "", "501090676", "", "21.9"],
+            ]
+        )
+
+        pn, rows = _parse_plr_from_dataframe(df)
+
+        self.assertEqual(pn, "CF1A1005C")
+        self.assertEqual(rows, [_row("1", "501090676", "21.9")])
+
+    def test_missing_qty_header_is_error(self):
+        import pandas as pd
+
+        df = pd.DataFrame(
+            [
+                ["Part List for: AAA"],
+                ["Operation Sequence", "Component Item"],
+                ["1", "C1"],
+            ]
+        )
+
+        with self.assertRaises(PlrZipParseError) as cm:
+            _parse_plr_from_dataframe(df)
+
+        self.assertTrue(any("QTY" in msg for msg in cm.exception.messages))
+
+    def test_header_without_data_rows_is_error(self):
+        import pandas as pd
+
+        df = pd.DataFrame(
+            [
+                ["Part List for: AAA"],
+                ["Operation Sequence", "Component Item", "QTY"],
+            ]
+        )
+
+        with self.assertRaises(PlrZipParseError) as cm:
+            _parse_plr_from_dataframe(df)
+
+        self.assertTrue(any("לא נמצאו שורות נתונים" in msg for msg in cm.exception.messages))
+
+    def test_tsv_export_has_three_columns(self):
+        body = format_plr_tsv_body([_row("1", "501090676", "21.9")])
+
+        self.assertEqual(
+            body,
+            "Operation Sequence\tComponent Item\tQTY\r\n"
+            "1\t501090676\t21.9\r\n",
+        )
+        body.encode("windows-1255", errors="strict")
+
+
+class TestLocalSamples(unittest.TestCase):
+    SAMPLE_EXPECTATIONS = {
+        "/home/liran/Downloads/5355176_1_PRODUCT.ZIP": (6, 6, 7),
+        "/home/liran/Downloads/TransferRequest_5351379_1294668_safe.zip": (5, 7, 10),
+        "/home/liran/Downloads/TransferRequest_5355118_1294668_safe.zip": (1, 3, 11),
+    }
+
+    @unittest.skipUnless(
+        all(Path(path).exists() for path in SAMPLE_EXPECTATIONS),
+        "local Rafael sample ZIPs are not present",
+    )
+    def test_local_sample_zips_parse_with_xlrd(self):
+        for path, (plreport_count, xls_count, row_count) in self.SAMPLE_EXPECTATIONS.items():
+            with self.subTest(path=path):
+                result = extract_plr_rows_from_zip(Path(path).read_bytes(), "")
+                self.assertEqual(result["plreport_zip_count"], plreport_count)
+                self.assertEqual(result["xls_file_count"], xls_count)
+                self.assertEqual(len(result["rows"]), row_count)
+                for row in result["rows"]:
+                    self.assertIn("operation_sequence", row)
+                    self.assertIn("component_item", row)
+                    self.assertIn("qty", row)
 
 
 if __name__ == "__main__":

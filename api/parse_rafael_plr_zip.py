@@ -1,344 +1,294 @@
 """
-Rafael PLR/ZIP parser — V.6.1.
+Rafael PLR/ZIP parser.
 
-Extracts ``Operation Sequence`` and ``Component Item`` from PLM Part-List Report
-files bundled in the ZIP that accompanies a Rafael manufacturing transfer request.
+Supported ZIP layouts:
 
-Typical ZIP layout (validated against three sample ZIPs):
+    TransferRequest_*.zip            optional outer wrapper
+    └── <id>_1_PRODUCT.ZIP           product ZIP
+        └── data/files/
+            ├── PLReport_<PN>_*.zip  nested report ZIPs parsed by this module
+            │   └── *.xls            one or more binary Excel 97-2003 files
+            └── other files          ignored
 
-    TransferRequest_*.zip            ← optional outer "safe" wrapper
-    └── <id>_1_PRODUCT.ZIP           ← the real product ZIP
-        └── data/files/              ← all lower-case
-            ├── PLReport_<PN>_*.zip  ← ONLY these nested ZIPs are parsed
-            │   └── <PN>_*.xls       ← CSV-formatted text (comma-separated)
-            ├── *_MLEDR*.xls         ← loose XLS in data/files — IGNORED
-            └── *.pdf / *.stp / …
-
-The module is intentionally self-contained (no dependency on
-``parse_rafael_rfq``).  All ZIP reading is done **in-memory** (``io.BytesIO``);
-no temp files are created.
-
-Public API
-----------
-``extract_plr_rows_from_zip(zip_bytes, parent_part_number)``
-    Returns::
-
-        {
-          "rows": [
-              {"row_number": 1, "operation_sequence": "...", "component_item": "..."},
-              ...
-          ],
-          "matched_file_count": N,   # PLR files whose PN == parent_part_number
-          "total_file_count":   M,   # total PLR files found
-          "warnings": ["..."],       # non-fatal issues
-        }
-
-    ``matched_file_count`` is 0 when ``parent_part_number`` is not found in any
-    PLR header; all files are still returned (sorting has no effect in that case).
+The parser intentionally reads only nested ``PLReport*.zip`` archives under
+``data/files/``. Loose ``*_MLEDR Report_*.xls`` files are ignored.
 """
 
 from __future__ import annotations
 
-import csv
+import contextlib
 import io
 import re
 import zipfile
-from typing import Any, Iterator
+from typing import Any
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+_MAX_ZIP_BYTES = 50 * 1024 * 1024
 
-_MAX_ZIP_BYTES = 50 * 1024 * 1024  # 50 MB soft guard (checked before parsing)
-
-# Regex to parse "Part List for: <PN>" header line
 _RE_PLR_HEADER = re.compile(
     r"Part\s+List\s+for\s*:\s*([^\s,]+)",
     re.IGNORECASE,
 )
+_RE_COLLAPSE_WS = re.compile(r"\s+")
 
 _HEADER_COL_OP_SEQ = "operation sequence"
 _HEADER_COL_COMP_ITEM = "component item"
+_HEADER_COL_QTY = "qty"
 
-_RE_COLLAPSE_WS = re.compile(r"\s+")
+PLR_TSV_COLUMNS: list[tuple[str, str]] = [
+    ("Operation Sequence", "operation_sequence"),
+    ("Component Item", "component_item"),
+    ("QTY", "qty"),
+]
 
-_CSV_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
 
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
+class PlrZipParseError(ValueError):
+    """Fatal PLR ZIP parsing error with one or more UI-displayable messages."""
+
+    def __init__(self, messages: str | list[str]) -> None:
+        if isinstance(messages, str):
+            self.messages = [messages]
+        else:
+            self.messages = [str(m).strip() for m in messages if str(m).strip()]
+        if not self.messages:
+            self.messages = ["שגיאה לא ידועה בפענוח ה-ZIP."]
+        super().__init__("\n".join(self.messages))
 
 
 def extract_plr_rows_from_zip(
     zip_bytes: bytes,
     parent_part_number: str,
 ) -> dict[str, Any]:
-    """Parse all PLR files from *zip_bytes* and return sorted rows.
+    """Parse Rafael PLR rows from a Product/TransferRequest ZIP.
 
-    Parameters
-    ----------
-    zip_bytes:
-        Raw bytes of the uploaded ZIP (may be the outer TransferRequest wrapper).
-    parent_part_number:
-        The first ``rafael_pn`` from the RFQ PDF.  PLR files whose header PN
-        matches this value are sorted to the top of the combined list.
-
-    Returns
-    -------
-    dict with keys ``rows``, ``matched_file_count``, ``total_file_count``,
-    ``warnings``.
+    Returns rows with ``operation_sequence``, ``component_item`` and ``qty``.
+    Raises ``PlrZipParseError`` for structural or parsing errors.
     """
-    warnings: list[str] = []
     parent_pn = (parent_part_number or "").strip()
 
     if len(zip_bytes) > _MAX_ZIP_BYTES:
-        return {
-            "rows": [],
-            "matched_file_count": 0,
-            "total_file_count": 0,
-            "warnings": [
-                f"ZIP גדול מדי ({len(zip_bytes) // (1024 * 1024)} MB); "
-                f"המקסימום הוא {_MAX_ZIP_BYTES // (1024 * 1024)} MB.",
-            ],
-        }
+        raise PlrZipParseError(
+            f"ZIP גדול מדי ({len(zip_bytes) // (1024 * 1024)} MB); "
+            f"המקסימום הוא {_MAX_ZIP_BYTES // (1024 * 1024)} MB."
+        )
 
     try:
-        plr_payloads = list(_iter_plr_payloads(zip_bytes, warnings))
+        plreport_zip_count, plr_payloads = _collect_plr_payloads(zip_bytes)
+    except PlrZipParseError:
+        raise
     except (zipfile.BadZipFile, OSError, ValueError) as exc:
-        return {
-            "rows": [],
-            "matched_file_count": 0,
-            "total_file_count": 0,
-            "warnings": [f"לא ניתן לפתוח את ה-ZIP: {exc}"],
-        }
+        raise PlrZipParseError(f"לא ניתן לפתוח את ה-ZIP: {exc}") from exc
 
-    total = len(plr_payloads)
     matched_rows: list[dict[str, str]] = []
     other_rows: list[dict[str, str]] = []
     matched_count = 0
+    errors: list[str] = []
 
     for filename, payload in plr_payloads:
         try:
-            file_pn, rows = _parse_plr_payload(payload)
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"{filename}: לא ניתן לפרסר ({type(exc).__name__}: {exc})")
+            file_pn, rows = _parse_plr_xls_payload(payload)
+        except PlrZipParseError as exc:
+            errors.extend(f"{filename}: {message}" for message in exc.messages)
             continue
-        if file_pn is None:
-            warnings.append(f"{filename}: לא נמצאה שורת Part List for: בקובץ — מדולג.")
-            continue
-        if not rows:
-            warnings.append(f"{filename}: לא נמצאו שורות נתונים מתחת ל-header.")
-            continue
+
         if parent_pn and file_pn.upper() == parent_pn.upper():
             matched_count += 1
             matched_rows.extend(rows)
         else:
             other_rows.extend(rows)
 
+    if errors:
+        raise PlrZipParseError(errors)
+
     combined = matched_rows + other_rows
-    for idx, row in enumerate(combined, start=1):
-        row["row_number"] = idx  # type: ignore[assignment]
+    if not combined:
+        raise PlrZipParseError("לא נמצאו שורות PLR לאחר פענוח קבצי ה-XLS.")
 
     return {
         "rows": combined,
         "matched_file_count": matched_count,
-        "total_file_count": total,
-        "warnings": warnings,
+        "plreport_zip_count": plreport_zip_count,
+        "xls_file_count": len(plr_payloads),
     }
 
 
-# ---------------------------------------------------------------------------
-# ZIP traversal
-# ---------------------------------------------------------------------------
-
-
-def _iter_plr_payloads(
-    zip_bytes: bytes,
-    warnings: list[str],
-) -> Iterator[tuple[str, bytes]]:
-    """Yield ``(filename, raw_bytes)`` for every PLR payload found.
-
-    Handles:
-    - Direct ``*_PRODUCT.ZIP`` — ``data/files/`` inside.
-    - TransferRequest wrapper containing a single ``*_PRODUCT.ZIP`` member.
-    - PLReport entries that are themselves ZIPs (nested ZIP).
-    """
-    try:
-        outer_zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    except zipfile.BadZipFile as exc:
-        raise zipfile.BadZipFile(str(exc)) from exc
-
-    with outer_zf:
-        names = [m.filename for m in outer_zf.infolist() if not m.is_dir()]
-
-        # Check for TransferRequest wrapper: single member ending _PRODUCT.ZIP
-        inner_candidates = [
-            n for n in names if n.upper().endswith("_PRODUCT.ZIP")
-        ]
-        if inner_candidates and len(names) == 1:
-            inner_bytes = outer_zf.read(inner_candidates[0])
-            yield from _iter_plr_payloads_from_product_zip(inner_bytes, warnings)
-            return
-
-        # Direct product ZIP (user uploaded *_PRODUCT.ZIP itself)
-        # Check for data/files/ path pattern
-        has_data_files = any(
-            n.lower().startswith("data/files/") for n in names
+def format_plr_tsv_body(rows: list[dict[str, Any]]) -> str:
+    """Build a tab-separated PLR export with CRLF line endings."""
+    lines = ["\t".join(label for label, _key in PLR_TSV_COLUMNS)]
+    for row in rows:
+        lines.append(
+            "\t".join(str(row.get(key, "")) for _label, key in PLR_TSV_COLUMNS)
         )
-        if has_data_files:
-            yield from _iter_plr_payloads_from_product_zip(zip_bytes, warnings)
-            return
-
-        # Fallback: treat as product ZIP directly
-        yield from _iter_plr_payloads_from_product_zip(zip_bytes, warnings)
+    return "\r\n".join(lines) + "\r\n"
 
 
-def _iter_plr_payloads_from_product_zip(
+def _collect_plr_payloads(zip_bytes: bytes) -> tuple[int, list[tuple[str, bytes]]]:
+    """Return ``(PLReport zip count, [(display_name, xls_bytes), ...])``."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as outer_zf:
+        members = [m for m in outer_zf.infolist() if not m.is_dir()]
+
+        if len(members) == 1 and members[0].filename.upper().endswith("_PRODUCT.ZIP"):
+            product_bytes = outer_zf.read(members[0].filename)
+            return _collect_plr_payloads_from_product_zip(product_bytes)
+
+        return _collect_plr_payloads_from_product_zip(zip_bytes)
+
+
+def _collect_plr_payloads_from_product_zip(
     zip_bytes: bytes,
-    warnings: list[str],
-) -> Iterator[tuple[str, bytes]]:
-    """Traverse the product ZIP and yield inner PLR payloads from nested ZIPs only.
+) -> tuple[int, list[tuple[str, bytes]]]:
+    payloads: list[tuple[str, bytes]] = []
+    errors: list[str] = []
 
-    Under ``data/files/`` we **only** open ``PLReport*.zip`` / ``PLR*.zip`` archives.
-    Standalone ``.xls`` / ``.csv`` siblings in that folder are explicitly ignored.
-    """
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        members = [m for m in zf.infolist() if not m.is_dir()]
-        plr_zip_members = [m for m in members if _is_plr_nested_zip(m.filename)]
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as product_zf:
+        members = [m for m in product_zf.infolist() if not m.is_dir()]
+        plreport_members = [
+            m for m in members if _is_plreport_nested_zip(m.filename)
+        ]
 
-        if not plr_zip_members:
-            warnings.append(
-                "לא נמצאו קבצי PLReport_*.zip / PLR*.zip בתוך data/files/ — "
-                "בדוק שה-ZIP הוא מסוג Product Transfer."
+        if not plreport_members:
+            raise PlrZipParseError(
+                "לא נמצאו קבצי PLReport*.zip בתוך data/files/."
             )
-            return
 
-        for member in plr_zip_members:
-            raw = zf.read(member.filename)
+        for member in plreport_members:
             leaf = member.filename.rsplit("/", 1)[-1]
-            if not zipfile.is_zipfile(io.BytesIO(raw)):
-                warnings.append(f"{leaf}: אינו ZIP תקין — מדולג.")
+            raw_nested_zip = product_zf.read(member.filename)
+            nested_buf = io.BytesIO(raw_nested_zip)
+
+            if not zipfile.is_zipfile(nested_buf):
+                errors.append(f"{leaf}: קובץ PLReport אינו ZIP תקין.")
                 continue
+
+            nested_buf.seek(0)
             try:
-                inner_files = _extract_files_from_nested_plr_zip(raw)
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"{leaf}: הזיפ המקונן פגום ({exc}) — מדולג.")
-                continue
-            if not inner_files:
-                warnings.append(f"{leaf}: הזיפ המקונן ריק — מדולג.")
-                continue
-            for inner_name, inner_bytes in inner_files:
-                yield f"{leaf}/{inner_name}", inner_bytes
+                with zipfile.ZipFile(nested_buf) as nested_zf:
+                    xls_members = [
+                        m
+                        for m in nested_zf.infolist()
+                        if not m.is_dir()
+                        and m.filename.rsplit("/", 1)[-1].lower().endswith(".xls")
+                    ]
+
+                    if not xls_members:
+                        errors.append(f"{leaf}: לא נמצא קובץ XLS בתוך ה-PLReport.")
+                        continue
+
+                    for xls_member in xls_members:
+                        xls_leaf = xls_member.filename.rsplit("/", 1)[-1]
+                        payloads.append(
+                            (
+                                f"{leaf}/{xls_leaf}",
+                                nested_zf.read(xls_member.filename),
+                            )
+                        )
+            except zipfile.BadZipFile as exc:
+                errors.append(f"{leaf}: הזיפ המקונן פגום ({exc}).")
+
+    if errors:
+        raise PlrZipParseError(errors)
+
+    return len(plreport_members), payloads
 
 
-def _is_plr_nested_zip(path: str) -> bool:
-    """True for ``data/files/`` entries that are ``.zip`` and start with PLR / PLReport."""
-    lower = path.replace("\\", "/").lower()
+def _is_plreport_nested_zip(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    lower = normalized.lower()
     if not lower.startswith("data/files/"):
         return False
     basename = lower.rsplit("/", 1)[-1]
-    if not basename.endswith(".zip"):
-        return False
-    stem = basename[:-4]
-    return stem.startswith("plreport") or stem.startswith("plr")
+    return basename.startswith("plreport") and basename.endswith(".zip")
 
 
-def _extract_files_from_nested_plr_zip(zip_bytes: bytes) -> list[tuple[str, bytes]]:
-    """Extract spreadsheet payloads from a PLReport/PLR nested ZIP (usually one ``.xls``)."""
-    all_files: list[tuple[str, bytes]] = []
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        for m in zf.infolist():
-            if m.is_dir():
-                continue
-            leaf = m.filename.rsplit("/", 1)[-1]
-            all_files.append((leaf, zf.read(m.filename)))
-    if not all_files:
-        return []
-    xls_like = [
-        (name, data)
-        for name, data in all_files
-        if name.lower().endswith((".xls", ".xlsx", ".csv"))
-    ]
-    return xls_like if xls_like else all_files
-
-
-# ---------------------------------------------------------------------------
-# PLR file parsing
-# ---------------------------------------------------------------------------
-
-
-def _parse_plr_payload(data: bytes) -> tuple[str | None, list[dict[str, str]]]:
-    """Parse inner PLR payload (``.xls`` that is usually comma-separated text).
-
-    Returns ``(part_number_or_None, rows)``.
-    Tries ``csv.reader`` on the full decoded stream first (handles quoted newlines),
-    then binary xls via ``pandas+xlrd``, then xlsx.
-    """
-    # Pass 1 — dirty CSV text (must not use line.split — breaks quoted newlines)
-    best_pn: str | None = None
-    best_rows: list[dict[str, str]] = []
-    for encoding in _CSV_ENCODINGS:
-        try:
-            text = data.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-        file_pn, rows = _parse_plr_csv_stream(text)
-        if file_pn and rows:
-            return file_pn, rows
-        if file_pn and best_pn is None:
-            best_pn = file_pn
-        if len(rows) > len(best_rows):
-            best_rows = rows
-    if best_pn is not None and best_rows:
-        return best_pn, best_rows
-    if best_pn is not None and _looks_like_text(data):
-        return best_pn, best_rows
-    try:
-        text = data.decode("utf-8", errors="replace")
-        file_pn, rows = _parse_plr_csv_stream(text)
-        if file_pn is not None:
-            return file_pn, rows
-    except Exception:  # noqa: BLE001
-        pass
-
-    # Pass 2 — binary xls (CDFV2 Excel 97-2003)
+def _parse_plr_xls_payload(data: bytes) -> tuple[str, list[dict[str, str]]]:
+    """Read a binary ``.xls`` payload and extract PLR rows."""
     try:
         import pandas as pd  # noqa: PLC0415
-        df = pd.read_excel(
-            io.BytesIO(data), engine="xlrd", header=None, dtype=str,
-        )
-        return _parse_plr_from_dataframe(df)
-    except Exception:  # noqa: BLE001
-        pass
+    except ImportError as exc:
+        raise PlrZipParseError("חסרה תלות Python לקריאת XLS: pandas.") from exc
 
-    # Pass 3 — xlsx (PK\x03\x04 magic bytes)
-    if data[:4] == b"PK\x03\x04":
-        try:
-            import pandas as pd  # noqa: PLC0415
-            df = pd.read_excel(
-                io.BytesIO(data), engine="openpyxl", header=None, dtype=str,
-            )
-            return _parse_plr_from_dataframe(df)
-        except Exception:  # noqa: BLE001
-            pass
-
-    return None, []
-
-
-def _looks_like_text(data: bytes) -> bool:
-    """Heuristic: data is text if the first 512 bytes are mostly printable ASCII."""
-    sample = data[:512]
     try:
-        decoded = sample.decode("utf-8", errors="strict")
-    except UnicodeDecodeError:
-        return False
-    printable = sum(1 for c in decoded if c.isprintable() or c in "\r\n\t")
-    return printable / max(len(decoded), 1) > 0.85
+        quiet = io.StringIO()
+        with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
+            df = pd.read_excel(
+                io.BytesIO(data),
+                engine="xlrd",
+                header=None,
+                dtype=str,
+            )
+    except ImportError as exc:
+        raise PlrZipParseError("חסרה תלות Python לקריאת XLS: xlrd.") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise PlrZipParseError(
+            f"לא ניתן לקרוא את קובץ ה-XLS ({type(exc).__name__}: {exc})."
+        ) from exc
+
+    return _parse_plr_from_dataframe(df)
+
+
+def _parse_plr_from_dataframe(df: Any) -> tuple[str, list[dict[str, str]]]:
+    import pandas as pd  # noqa: PLC0415
+
+    file_pn: str | None = None
+    op_seq_col: int | None = None
+    comp_item_col: int | None = None
+    qty_col: int | None = None
+    found_header = False
+    rows: list[dict[str, str]] = []
+
+    for _, row in df.iterrows():
+        cells = [str(cell).strip() if pd.notna(cell) else "" for cell in row]
+
+        if file_pn is None:
+            for cell in cells:
+                match = _RE_PLR_HEADER.search(cell)
+                if match:
+                    file_pn = match.group(1).strip()
+                    break
+            if file_pn is None:
+                continue
+
+        if not found_header:
+            op_idx = _find_plr_column_index(cells, _HEADER_COL_OP_SEQ)
+            comp_idx = _find_plr_column_index(cells, _HEADER_COL_COMP_ITEM)
+            qty_idx = _find_plr_column_index(cells, _HEADER_COL_QTY)
+            if op_idx is not None and comp_idx is not None and qty_idx is not None:
+                op_seq_col = op_idx
+                comp_item_col = comp_idx
+                qty_col = qty_idx
+                found_header = True
+            continue
+
+        component_item = _safe_cell(cells, comp_item_col)
+        if not component_item:
+            continue
+
+        rows.append(
+            {
+                "operation_sequence": _safe_cell(cells, op_seq_col),
+                "component_item": component_item,
+                "qty": _safe_cell(cells, qty_col),
+            }
+        )
+
+    if file_pn is None:
+        raise PlrZipParseError("לא נמצאה שורת Part List for בקובץ ה-XLS.")
+    if not found_header:
+        raise PlrZipParseError(
+            "לא נמצאה טבלת PLR עם העמודות Operation Sequence, Component Item ו-QTY."
+        )
+    if not rows:
+        raise PlrZipParseError("לא נמצאו שורות נתונים בטבלת ה-PLR.")
+
+    return file_pn, rows
 
 
 def _normalize_plr_header_cell(cell: str) -> str:
-    """Collapse PLM newlines/tabs inside header cells for reliable name matching."""
-    return _RE_COLLAPSE_WS.sub(" ", (cell or "").replace("\r", " ")).strip().lower()
+    return _RE_COLLAPSE_WS.sub(
+        " ",
+        (cell or "").replace("\r", " ").replace("\n", " "),
+    ).strip().lower()
 
 
 def _find_plr_column_index(row: list[str], header_name: str) -> int | None:
@@ -347,94 +297,6 @@ def _find_plr_column_index(row: list[str], header_name: str) -> int | None:
         if _normalize_plr_header_cell(cell) == target:
             return idx
     return None
-
-
-def _row_is_effectively_empty(row: list[str]) -> bool:
-    return not any((c or "").strip() for c in row)
-
-
-def _parse_plr_csv_stream(text: str) -> tuple[str | None, list[dict[str, str]]]:
-    """Parse dirty PLM CSV using ``csv.reader`` on the full stream (not line-split)."""
-    file_pn: str | None = None
-    op_seq_col: int | None = None
-    comp_item_col: int | None = None
-    in_data_section = False
-    rows: list[dict[str, str]] = []
-
-    reader = csv.reader(io.StringIO(text), delimiter=",")
-    for raw_row in reader:
-        if _row_is_effectively_empty(raw_row):
-            continue
-
-        if file_pn is None:
-            for cell in raw_row:
-                m = _RE_PLR_HEADER.search(cell or "")
-                if m:
-                    file_pn = m.group(1).strip()
-                    break
-            continue
-
-        if not in_data_section:
-            op_idx = _find_plr_column_index(raw_row, _HEADER_COL_OP_SEQ)
-            comp_idx = _find_plr_column_index(raw_row, _HEADER_COL_COMP_ITEM)
-            if op_idx is not None and comp_idx is not None:
-                op_seq_col = op_idx
-                comp_item_col = comp_idx
-                in_data_section = True
-            continue
-
-        comp_val = _safe_cell(raw_row, comp_item_col)
-        if not _has_component_item(comp_val):
-            continue
-
-        op_val = _safe_cell(raw_row, op_seq_col)
-        rows.append({"operation_sequence": op_val, "component_item": comp_val})
-
-    return file_pn, rows
-
-
-def _has_component_item(component_item: str) -> bool:
-    """A valid PLR data row must have a non-empty Component Item."""
-    return bool((component_item or "").strip())
-
-
-def _parse_plr_from_dataframe(df: Any) -> tuple[str | None, list[dict[str, str]]]:
-    """Parse PLR from a pandas DataFrame (already loaded from xls/xlsx)."""
-    import pandas as pd  # noqa: PLC0415
-
-    file_pn: str | None = None
-    op_seq_col: int | None = None
-    comp_item_col: int | None = None
-    rows: list[dict[str, str]] = []
-
-    in_data_section = False
-    for _, row in df.iterrows():
-        cells = [str(c).strip() if pd.notna(c) else "" for c in row]
-
-        if file_pn is None:
-            for cell in cells:
-                m = _RE_PLR_HEADER.search(cell)
-                if m:
-                    file_pn = m.group(1).strip()
-                    break
-            continue
-
-        if not in_data_section:
-            op_idx = _find_plr_column_index(cells, _HEADER_COL_OP_SEQ)
-            comp_idx = _find_plr_column_index(cells, _HEADER_COL_COMP_ITEM)
-            if op_idx is not None and comp_idx is not None:
-                op_seq_col = op_idx
-                comp_item_col = comp_idx
-                in_data_section = True
-            continue
-
-        comp_val = _safe_cell(cells, comp_item_col)
-        if not _has_component_item(comp_val):
-            continue
-        op_val = _safe_cell(cells, op_seq_col)
-        rows.append({"operation_sequence": op_val, "component_item": comp_val})
-
-    return file_pn, rows
 
 
 def _safe_cell(row: list[str], idx: int | None) -> str:

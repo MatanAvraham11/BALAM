@@ -45,7 +45,11 @@ from parse_balam import (
     revision_for_export,
 )
 from fai_parser import items_to_csv, run_fai
-from parse_rafael_plr_zip import extract_plr_rows_from_zip
+from parse_rafael_plr_zip import (
+    PlrZipParseError,
+    extract_plr_rows_from_zip,
+    format_plr_tsv_body,
+)
 from parse_rafael_rfq import (
     RafaelRfq,
     flatten_rafael_to_rows,
@@ -406,10 +410,19 @@ async def rafael_zip_endpoint(
     Returns JSON::
 
         {
-          "rows": [{"row_number": 1, "operation_sequence": "...", "component_item": "..."}, …],
+          "rows": [
+            {
+              "operation_sequence": "...",
+              "component_item": "...",
+              "qty": "..."
+            },
+            …
+          ],
           "matched_file_count": N,
-          "total_file_count": M,
-          "warnings": ["…"]
+          "plreport_zip_count": P,
+          "xls_file_count": M,
+          "txt_base64": "...",
+          "txt_filename": "..."
         }
     """
     _require_auth(request)
@@ -418,19 +431,25 @@ async def rafael_zip_endpoint(
     if not zip_bytes:
         raise HTTPException(status_code=400, detail="קובץ ZIP ריק.")
 
-    result = extract_plr_rows_from_zip(zip_bytes, (parent_part_number or "").strip())
-
-    # If the parser could not open the ZIP at all, return 400
-    if (
-        not result["rows"]
-        and result["total_file_count"] == 0
-        and result["warnings"]
-        and any(
-            kw in w
-            for w in result["warnings"]
-            for kw in ("לא ניתן לפתוח", "ZIP פגום", "BadZipFile")
+    try:
+        result = extract_plr_rows_from_zip(
+            zip_bytes,
+            (parent_part_number or "").strip(),
         )
-    ):
-        raise HTTPException(status_code=400, detail=result["warnings"][0])
+    except PlrZipParseError as exc:
+        detail: str | list[str]
+        detail = exc.messages[0] if len(exc.messages) == 1 else exc.messages
+        raise HTTPException(status_code=400, detail=detail) from exc
 
-    return JSONResponse(content=result)
+    original_name = file.filename or "rafael_plr"
+    txt_basename = original_name.rsplit(".", 1)[0] + "_plr.txt"
+    tsv_body = format_plr_tsv_body(result["rows"])
+    txt_bytes = tsv_body.encode("windows-1255", errors="replace")
+
+    return JSONResponse(
+        content={
+            **result,
+            "txt_base64": base64.b64encode(txt_bytes).decode(),
+            "txt_filename": txt_basename,
+        }
+    )
