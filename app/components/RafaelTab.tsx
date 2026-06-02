@@ -25,9 +25,6 @@ type RafaelResponse = {
   submission_date: string;
   /** Same as submission_date (V.6.0 alias). */
   submission_due_date?: string;
-  buyer_ocr_ready?: boolean;
-  buyer_ocr_reason?: string | null;
-  buyer_ocr_http_status?: number | null;
   rows: RafaelRow[];
   txt_base64: string;
   txt_filename: string;
@@ -57,80 +54,6 @@ const RAFAEL_UPLOAD_ACCEPT: Accept = {
   "multipart/x-zip": [".zip"],
   "application/octet-stream": [".pdf", ".zip"],
 };
-
-/** Human-readable Hebrew for buyer field: success, infra failure, or weak OCR. */
-function rafaelBuyerDisplayLabel(
-  buyerName: string,
-  reason: string | null | undefined,
-  httpStatus?: number | null,
-): string {
-  const t = (buyerName || "").trim();
-
-  if (t && t !== "OCR Failed") {
-    return t;
-  }
-
-  if (t === "OCR Failed") {
-    const byReason: Record<string, string> = {
-      rafael_buyer_ocr_disabled:
-        "OCR לשם הקניין כבוי (הסר את RAFAEL_BUYER_OCR או הגדר לערך חיובי)",
-      ocr_space_api_key_missing:
-        "חסר מפתח OCR.space — הגדר OCR_SPACE_API_KEY בשרת (Vercel / worker)",
-      requests_import_failed:
-        "חסרה חבילת requests ב-Python (התקן requirements.txt)",
-      tesseract_not_on_path:
-        "חסר Tesseract בשרת (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
-      pytesseract_import_failed:
-        "שגיאת Tesseract/pytesseract (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
-      hebrew_lang_pack_missing:
-        "חבילת heb ל-Tesseract (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
-    };
-    return (
-      byReason[reason ?? ""] ??
-      "לא ניתן להריץ OCR לשם הקניין (בדוק OCR_SPACE_API_KEY ופריסת השרת)"
-    );
-  }
-
-  const weakOcr: Record<string, string> = {
-    ocr_space_no_hebrew:
-      "OCR רץ אך לא זוהו מספיק אותיות עבריות בשם הקניין (נסה תמונה/מנוע אחר או RAFAEL_OCR_DEBUG=1)",
-    ocr_space_parse_empty:
-      "OCR.space לא החזיר טקסט מהאזור שנחתך — בדוק את ה-PDF או את מפתח ה-API",
-    ocr_space_network_error:
-      "אין תקשורת יציבה ל-OCR.space (פסק זמן או רשת). ניסינו שלוש פעמים — נסה שוב בעוד רגע",
-    ocr_space_auth_error:
-      "מפתח OCR.space נדחה (401/403) — בדוק שהמפתח נכון ובתוקף בחשבון OCR.space",
-    ocr_space_rate_limited:
-      "הגעת למכסת בקשות ל-OCR.space (429). המערכת כבר ניסתה שוב אוטומטית — המתן דקה ונסה שוב",
-    ocr_space_payload_too_large:
-      "התמונה ל-OCR.space גדולה מדי (413) — נסה RFQ אחר או פנה לתמיכה",
-    ocr_space_quota_exceeded:
-      "נראה שנגמרו קרדיטים או מכסה ב-OCR.space — היכנס לחשבון ובדוק את התוכנית",
-    ocr_space_bad_request:
-      "בקשה לא תקינה ל-OCR.space (400) — נסה שוב; אם חוזר, שלח לתמיכה את קוד ה-HTTP מהשרת",
-    ocr_space_server_error:
-      "שרת OCR.space החזיר שגיאה (5xx) אחרי ניסיונות חוזרים — נסה שוב בעוד דקות",
-    ocr_space_client_error:
-      "תשובת לקוח לא צפויה מ-OCR.space (קוד 4xx) — בדוק מפתח, חשבון, או חסימת רשת",
-    ocr_space_http_error:
-      "תשובת HTTP לא צפויה מ-OCR.space — נסה שוב; אם חוזר, RAFAEL_OCR_DEBUG=1 בשרת לפרטים",
-    ocr_space_json_error:
-      "תשובה לא תקינה מ-OCR.space (לא JSON) — בדוק רשת או פרוקסי",
-  };
-  if (!t && reason && weakOcr[reason]) {
-    let msg = weakOcr[reason];
-    if (
-      typeof httpStatus === "number" &&
-      httpStatus > 0 &&
-      reason !== "ocr_space_network_error"
-    ) {
-      msg = `${msg} (קוד HTTP ${httpStatus})`;
-    }
-    return msg;
-  }
-
-  return t || "—";
-}
 
 function apiErrorMessages(json: unknown, fallback: string): string[] {
   if (json && typeof json === "object") {
@@ -483,28 +406,12 @@ export default function RafaelTab() {
 
   const buyerDisplay = useMemo(() => {
     if (!data) return "—";
-    return rafaelBuyerDisplayLabel(
-      data.buyer_name,
-      data.buyer_ocr_reason,
-      data.buyer_ocr_http_status,
-    );
+    return data.buyer_name.trim() || "—";
   }, [data]);
 
   const tableRows = useMemo(() => {
     if (!data) return [];
-    const label = rafaelBuyerDisplayLabel(
-      data.buyer_name,
-      data.buyer_ocr_reason,
-      data.buyer_ocr_http_status,
-    );
-    const replaceBuyerCell =
-      data.buyer_name === "OCR Failed" ||
-      (!(data.buyer_name || "").trim() && Boolean(data.buyer_ocr_reason));
-    if (!replaceBuyerCell) return data.rows;
-    return data.rows.map((row) => ({
-      ...row,
-      "שם קניין": label,
-    }));
+    return data.rows;
   }, [data]);
 
   return (

@@ -1,7 +1,7 @@
 """Lightweight tests for ``parse_rafael_rfq``.
 
 1. Pure-logic unit tests (always run).
-2. PDF smoke tests when reference RFQs exist on disk (Cursor workspace or Downloads).
+2. PDF smoke tests when the three Rafael RFQ references exist in Downloads.
 
 Run::
 
@@ -13,8 +13,8 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-import unittest.mock
 from pathlib import Path
+from pydantic import ValidationError
 
 _ROOT = Path(__file__).resolve().parents[2]
 _API = _ROOT / "api"
@@ -32,57 +32,85 @@ from parse_rafael_rfq import (  # noqa: E402
     Delivery,
     PartBlock,
     RafaelRfq,
-    _buyer_ocr_label_clean,
+    _build_type3_font_code_maps_by_page,
     _classify_fai_digit,
-    _extract_valid_submission_dmy_from_ocr_text,
-    _format_issue_date,
+    _decode_fai_not_required_cell,
+    _decode_type3_chars,
+    _detect_part_blocks,
+    _detect_rfq_number,
     _hebrew_letter_count,
-    _ocr_space_collect_parsed_text,
     _parse_dmy,
-    _tesseract_hebrew_ready,
+    _type3_code_from_pdf_text,
+    _visual_hebrew_to_logical,
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
-    rafael_buyer_ocr_api_status,
-    rafael_buyer_ocr_diagnostic,
 )
 
-_FIXTURE_ROOT = Path(
-    "/Users/matanavraham/Library/Application Support/Cursor/User/"
-    "workspaceStorage/0d2fd20bb5cdba5e7b46d32eb8198854/pdfs"
-)
-_DOWNLOADS = Path("/Users/matanavraham/Downloads")
+_DOWNLOADS = Path.home() / "Downloads"
 
 _PDF_CASE_DEFS = [
     {
-        "suffixes": [
-            _FIXTURE_ROOT / "8fa96acd-fb8c-4c76-b759-2dfaf37bdc31" / "RFQ_1294668_684471.pdf",
+        "paths": [
             _DOWNLOADS / "RFQ_1294668_684471.pdf",
         ],
         "rfq": "684471",
         "buyer": "חיים קאופמן",
+        "submission_date": "08/05/2026",
         "parts": 6,
         "rows": 8,
-    },
-    {
-        "suffixes": [
-            _FIXTURE_ROOT / "223a6d16-1352-497f-b37b-a387cf796767" / "RFQ_1294668_684070.pdf",
-            _DOWNLOADS / "RFQ_1294668_684070.pdf",
+        "fai": [
+            "FAI 2",
+            FAI_NOT_REQUIRED,
+            FAI_NOT_REQUIRED,
+            "FAI 2",
+            "FAI 2",
+            FAI_NOT_REQUIRED,
+            "FAI 2",
+            FAI_NOT_REQUIRED,
         ],
-        "rfq": "684070",
-        "buyer": "שרה שירן",
-        "parts": 1,
-        "rows": 7,
     },
     {
-        "suffixes": [
-            _FIXTURE_ROOT / "a5520b41-7954-4125-b7e5-53912d3cb934" / "RFQ_1294668_684196 (1).pdf",
+        "paths": [
+            _DOWNLOADS / "RFQ_1294668_684196.pdf",
             _DOWNLOADS / "RFQ_1294668_684196 (1).pdf",
         ],
         "rfq": "684196",
-        "buyer": "יוסי שני",
+        "buyer": "יוסי שלום",
+        "submission_date": "08/05/2026",
         "parts": 5,
         "rows": 18,
+        "fai": [
+            "FAI 2",
+            "FAI 2",
+            FAI_NOT_REQUIRED,
+            "FAI 2",
+            FAI_NOT_REQUIRED,
+            FAI_NOT_REQUIRED,
+            FAI_NOT_REQUIRED,
+            FAI_NOT_REQUIRED,
+            "FAI 2",
+            FAI_NOT_REQUIRED,
+            FAI_NOT_REQUIRED,
+            FAI_NOT_REQUIRED,
+            FAI_NOT_REQUIRED,
+            FAI_NOT_REQUIRED,
+            "FAI 2",
+            FAI_NOT_REQUIRED,
+            FAI_NOT_REQUIRED,
+            FAI_NOT_REQUIRED,
+        ],
+    },
+    {
+        "paths": [
+            _DOWNLOADS / "RFQ_1294668_684070.pdf",
+        ],
+        "rfq": "684070",
+        "buyer": "שירן סורני שלאם",
+        "submission_date": "13/05/2026",
+        "parts": 1,
+        "rows": 7,
+        "fai": [FAI_NOT_REQUIRED] * 7,
     },
 ]
 
@@ -90,15 +118,17 @@ _PDF_CASE_DEFS = [
 def _resolve_pdf_cases() -> list[dict]:
     cases: list[dict] = []
     for d in _PDF_CASE_DEFS:
-        path = next((p for p in d["suffixes"] if p.exists()), None)
+        path = next((p for p in d["paths"] if p.exists()), None)
         if path is None:
             continue
         cases.append({
             "path": path,
             "rfq": d["rfq"],
             "buyer": d["buyer"],
+            "submission_date": d["submission_date"],
             "parts": d["parts"],
             "rows": d["rows"],
+            "fai": d["fai"],
         })
     return cases
 
@@ -106,82 +136,81 @@ def _resolve_pdf_cases() -> list[dict]:
 _PDF_CASES = _resolve_pdf_cases()
 
 
-class SubmissionDueDateOcrExtractTests(unittest.TestCase):
-    """``_extract_valid_submission_dmy_from_ocr_text`` — strict ``dd/mm/yyyy`` from OCR."""
+class Type3DecoderTests(unittest.TestCase):
+    def test_code_from_pdf_text(self):
+        self.assertEqual(_type3_code_from_pdf_text("A"), 65)
+        self.assertEqual(_type3_code_from_pdf_text("(cid:237)"), 237)
+        self.assertIsNone(_type3_code_from_pdf_text(""))
+        self.assertIsNone(_type3_code_from_pdf_text("AB"))
+        self.assertIsNone(_type3_code_from_pdf_text("א"))
+        self.assertEqual(_type3_code_from_pdf_text("\u2018"), 143)
+        self.assertEqual(_type3_code_from_pdf_text("\u0153"), 156)
+        self.assertEqual(_type3_code_from_pdf_text("\u0141"), 149)
+        self.assertEqual(_type3_code_from_pdf_text("\u02dd"), 205)
 
-    def test_plain_slash(self):
+    def test_decode_type3_chars(self):
+        chars = [
+            {"text": chr(1), "x0": 10.0, "top": 5.0, "size": 0},
+            {"text": chr(2), "x0": 14.0, "top": 5.0, "size": 0},
+            {"text": chr(3), "x0": 24.0, "top": 5.0, "size": 0},
+        ]
         self.assertEqual(
-            _extract_valid_submission_dmy_from_ocr_text("noise 08/05/2026 tail"),
-            "08/05/2026",
+            _decode_type3_chars(chars, {1: "א", 2: "ב", 3: "ג"}, word_gap_min=7.0),
+            "אב ג",
         )
 
-    def test_hyphen_variant(self):
+    def test_decode_type3_chars_rejects_unmapped_glyphs(self):
+        chars = [{"text": chr(9), "x0": 10.0, "top": 5.0, "size": 0}]
+        with self.assertRaisesRegex(ValueError, "unmapped"):
+            _decode_type3_chars(chars, {})
+
+    def test_decode_type3_chars_rejects_unrepresentable_glyphs(self):
+        chars = [{"text": "א", "x0": 10.0, "top": 5.0, "size": 0}]
+        with self.assertRaisesRegex(ValueError, "unrepresentable"):
+            _decode_type3_chars(chars, {})
+
+    def test_decode_fai_not_required_cell_tries_each_font_map(self):
+        chars = [
+            {"text": "(cid:224)", "x0": 33.7, "top": 100.0, "size": 0},
+            {"text": "=", "x0": 39.0, "top": 100.0, "size": 0},
+            {"text": "ø", "x0": 30.8, "top": 109.3, "size": 0},
+            {"text": ">", "x0": 36.2, "top": 109.3, "size": 0},
+            {"text": "(cid:15)", "x0": 40.7, "top": 109.3, "size": 0},
+            {"text": "?", "x0": 45.1, "top": 109.3, "size": 0},
+        ]
+        wrong_map = {224: "א", 61: "ת", 248: "ש", 62: "ה", 15: "ד", 63: "ג"}
+        right_map = {224: "א", 61: "ל", 248: "ש", 62: "ר", 15: "ד", 63: "נ"}
+
         self.assertEqual(
-            _extract_valid_submission_dmy_from_ocr_text("08-05-2026"),
-            "08/05/2026",
+            _decode_fai_not_required_cell(chars, [wrong_map, right_map]),
+            FAI_NOT_REQUIRED,
         )
 
-    def test_unicode_minus_normalised(self):
+    def test_decode_fai_not_required_cell_accepts_single_line(self):
+        chars = [
+            {"text": chr(1), "x0": 10.0, "top": 100.0, "size": 0},
+            {"text": chr(2), "x0": 15.0, "top": 100.0, "size": 0},
+            {"text": chr(3), "x0": 20.0, "top": 100.0, "size": 0},
+            {"text": chr(4), "x0": 25.0, "top": 100.0, "size": 0},
+            {"text": chr(5), "x0": 35.0, "top": 100.0, "size": 0},
+            {"text": chr(6), "x0": 40.0, "top": 100.0, "size": 0},
+        ]
+        code_map = {1: "ש", 2: "ר", 3: "ד", 4: "נ", 5: "א", 6: "ל"}
+
         self.assertEqual(
-            _extract_valid_submission_dmy_from_ocr_text("08\u221205\u22122026"),
-            "08/05/2026",
+            _decode_fai_not_required_cell(chars, [code_map]),
+            FAI_NOT_REQUIRED,
         )
 
-    def test_invalid_calendar_returns_empty(self):
-        self.assertEqual(_extract_valid_submission_dmy_from_ocr_text("32/13/2026"), "")
+    def test_decode_fai_not_required_cell_rejects_unrepresentable_glyphs(self):
+        chars = [{"text": "א", "x0": 10.0, "top": 100.0, "size": 0}]
+        self.assertIsNone(_decode_fai_not_required_cell(chars, [{}]))
 
-    def test_first_valid_wins(self):
+    def test_visual_hebrew_to_logical(self):
         self.assertEqual(
-            _extract_valid_submission_dmy_from_ocr_text("31/12/2025 08/05/2026"),
-            "31/12/2025",
+            _visual_hebrew_to_logical("ןמפואק םייח"),
+            "חיים קאופמן",
         )
-
-
-class BuyerOcrLabelCleanTests(unittest.TestCase):
-    """``_buyer_ocr_label_clean`` — minimal cleaner used after the SURGICAL crop.
-
-    Since the crop now contains ONLY the buyer-name glyphs (no ``קניין:`` label,
-    no neighbor cells), the cleaner's job is just to normalise: drop non-Hebrew
-    characters, collapse whitespace, pick the longest Hebrew run, and drop
-    residual 1-letter edge tokens. Tests cover the surviving responsibilities.
-    """
-
-    def test_passes_clean_name_unchanged(self):
-        self.assertEqual(_buyer_ocr_label_clean("חיים קאופמן"), "חיים קאופמן")
-        self.assertEqual(_buyer_ocr_label_clean("יוסי שלום"), "יוסי שלום")
-        self.assertEqual(_buyer_ocr_label_clean("שירן סורני שלאם"), "שירן סורני שלאם")
-
-    def test_drops_stray_punctuation_and_digits(self):
-        # OCR sometimes emits stray ASCII / digits even with a clean crop.
-        self.assertEqual(_buyer_ocr_label_clean("חיים קאופמן 17"), "חיים קאופמן")
-        self.assertEqual(_buyer_ocr_label_clean("|חיים קאופמן|"), "חיים קאופמן")
-
-    def test_collapses_whitespace_and_newlines(self):
-        self.assertEqual(
-            _buyer_ocr_label_clean("חיים   קאופמן\n\n"), "חיים קאופמן"
-        )
-
-    def test_strips_single_letter_edge_tokens(self):
-        # Residual 1-letter Hebrew "words" at the edges are OCR noise.
-        self.assertEqual(_buyer_ocr_label_clean("ך חיים קאופמן"), "חיים קאופמן")
-        self.assertEqual(_buyer_ocr_label_clean("דוד כהן ך"), "דוד כהן")
-
-    def test_keeps_two_letter_name_components(self):
-        # Real 2-letter Hebrew name components (בן / בר / אל) must NOT be stripped.
-        self.assertEqual(_buyer_ocr_label_clean("בן דוד"), "בן דוד")
-        self.assertEqual(_buyer_ocr_label_clean("דוד בר אל"), "דוד בר אל")
-
-
-class FormatIssueDateTests(unittest.TestCase):
-    def test_unicode_minus(self):
-        self.assertEqual(_format_issue_date("04\u2212MAY\u221226"), "04/05/2026")
-
-    def test_ascii_minus(self):
-        self.assertEqual(_format_issue_date("04-MAY-26"), "04/05/2026")
-
-    def test_invalid(self):
-        self.assertEqual(_format_issue_date("not a date"), "")
-        self.assertEqual(_format_issue_date("04-XYZ-26"), "")
 
 
 class ParseDmyTests(unittest.TestCase):
@@ -202,10 +231,38 @@ class ClassifyFaiTests(unittest.TestCase):
         self.assertEqual(_classify_fai_digit("2"), "FAI 2")
         self.assertEqual(_classify_fai_digit("3"), "FAI 3")
 
-    def test_invalid_falls_back(self):
-        self.assertEqual(_classify_fai_digit(None), FAI_NOT_REQUIRED)
-        self.assertEqual(_classify_fai_digit(""), FAI_NOT_REQUIRED)
-        self.assertEqual(_classify_fai_digit("9"), FAI_NOT_REQUIRED)
+    def test_invalid_is_rejected(self):
+        self.assertIsNone(_classify_fai_digit(None))
+        self.assertIsNone(_classify_fai_digit(""))
+        self.assertIsNone(_classify_fai_digit("9"))
+
+
+class StrictParserTests(unittest.TestCase):
+    def test_delivery_requires_explicit_fai(self):
+        with self.assertRaises(ValidationError):
+            Delivery(quantity=1.0, weeks_aro=1)
+
+    def test_rfq_number_does_not_fall_back_to_fax_info(self):
+        pages = [[{"text": "FAX_INFO:684471:", "x0": 0.0, "x1": 100.0, "top": 100.0}]]
+        with self.assertRaisesRegex(ValueError, "no standalone"):
+            _detect_rfq_number(pages)
+
+    def test_part_requires_quantity_rows(self):
+        words = [
+            {"text": "Each", "x0": 500.0, "x1": 520.0, "top": 200.0},
+            {"text": "BD01006", "x0": 730.0, "x1": 780.0, "top": 200.0},
+        ]
+        with self.assertRaisesRegex(ValueError, "no delivery quantity"):
+            _detect_part_blocks([words], [[]], [[]])
+
+    def test_delivery_requires_aro_weeks(self):
+        words = [
+            {"text": "Each", "x0": 500.0, "x1": 520.0, "top": 200.0},
+            {"text": "BD01006", "x0": 730.0, "x1": 780.0, "top": 200.0},
+            {"text": "12.00", "x0": 260.0, "x1": 290.0, "top": 200.0},
+        ]
+        with self.assertRaisesRegex(ValueError, "missing integer weeks"):
+            _detect_part_blocks([words], [[]], [[]])
 
 
 class FlattenAndWriteTests(unittest.TestCase):
@@ -272,34 +329,6 @@ class FlattenAndWriteTests(unittest.TestCase):
             self.assertEqual(line.count("\t"), len(RAFAEL_TXT_COLUMNS) - 1)
 
 
-class BuyerOcrDiagnosticTests(unittest.TestCase):
-    def test_shape_matches_ocr_space_ready(self):
-        from parse_rafael_rfq import _reset_rafael_buyer_ocr_parse_reason
-
-        _reset_rafael_buyer_ocr_parse_reason()
-        d = rafael_buyer_ocr_diagnostic()
-        self.assertIsInstance(d, dict)
-        self.assertIn("ready", d)
-        self.assertIn("reason", d)
-        self.assertIsInstance(d["ready"], bool)
-        self.assertEqual(d["ready"], _tesseract_hebrew_ready())
-        if d["ready"]:
-            self.assertIsNone(d["reason"])
-        else:
-            self.assertIsInstance(d["reason"], str)
-            self.assertIn(
-                d["reason"],
-                (
-                    "rafael_buyer_ocr_disabled",
-                    "ocr_space_api_key_missing",
-                    "requests_import_failed",
-                ),
-            )
-        api = rafael_buyer_ocr_api_status()
-        self.assertEqual(api["ready"], d["ready"])
-        self.assertEqual(api["reason"], d["reason"])
-
-
 class PdfSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -313,34 +342,37 @@ class PdfSmokeTests(unittest.TestCase):
                 rows = flatten_rafael_to_rows(rfq)
 
                 self.assertEqual(rfq.rfq_number, case["rfq"])
-                if _tesseract_hebrew_ready():
-                    self.assertGreaterEqual(
-                        _hebrew_letter_count(rfq.buyer_name),
-                        2,
-                        f"buyer_name={rfq.buyer_name!r} (expected Hebrew OCR; "
-                        f"reference was {case['buyer']!r})",
-                    )
-                else:
-                    self.assertEqual(
-                        rfq.buyer_name,
-                        "OCR Failed",
-                        "without OCR_SPACE_API_KEY buyer must not be guessed",
-                    )
-                self.assertIsNotNone(_parse_dmy(rfq.submission_date))
+                self.assertEqual(rfq.buyer_name, case["buyer"])
+                self.assertGreaterEqual(_hebrew_letter_count(rfq.buyer_name), 2)
+                self.assertEqual(rfq.submission_date, case["submission_date"])
+                self.assertEqual(rfq.submission_due_date, case["submission_date"])
                 self.assertEqual(len(rfq.parts), case["parts"])
                 self.assertEqual(len(rows), case["rows"])
+                self.assertEqual([r["FAI"] for r in rows], case["fai"])
 
                 for r in rows:
                     for col in RAFAEL_TXT_COLUMNS:
                         val = r.get(col, "")
-                        if col == "שם קניין" and val == "":
-                            continue
                         self.assertNotIn(
                             val,
                             ("", None),
                             f"empty {col!r} in row {r.get('מספר שורה')}",
                         )
                     self.assertIsInstance(r["זמן אספקה בשבועות"], int)
+
+    def test_type3_map_is_available_for_references(self):
+        for case in _PDF_CASES:
+            with self.subTest(pdf=case["path"].name):
+                page_maps = _build_type3_font_code_maps_by_page(case["path"])
+                decoded = {value for code_map in page_maps[0] for value in code_map.values()}
+                self.assertIn("/", decoded)
+                self.assertTrue({"0", "2", "5", "6", "8"}.issubset(decoded))
+                self.assertIn("ז", decoded)
+                self.assertIn("ץ", decoded)
+                self.assertGreaterEqual(
+                    sum(1 for value in decoded if "\u05d0" <= value <= "\u05ea"),
+                    10,
+                )
 
     def test_tsv_round_trip_is_clean(self):
         for case in _PDF_CASES:
@@ -351,63 +383,6 @@ class PdfSmokeTests(unittest.TestCase):
                 lines = body.rstrip("\r\n").split("\r\n")
                 self.assertEqual(len(lines), 1 + len(rows))
                 body.encode("windows-1255", errors="strict")
-
-
-class OcrSpaceCollectParsedTextTests(unittest.TestCase):
-    def test_collects_text_when_ocr_exit_code_not_1_or_2(self):
-        payload = {
-            "OCRExitCode": 3,
-            "IsErroredOnProcessing": True,
-            "ParsedResults": [
-                {"ParsedText": "קניין: דוד כהן", "FileParseExitCode": 1},
-            ],
-        }
-        out = _ocr_space_collect_parsed_text(payload)
-        self.assertIn("דוד", out)
-
-    def test_empty_when_no_parsed_blocks(self):
-        self.assertEqual(_ocr_space_collect_parsed_text({"ParsedResults": []}), "")
-
-
-class BuyerDetectAndApiStatusTests(unittest.TestCase):
-    def setUp(self) -> None:
-        from parse_rafael_rfq import _reset_rafael_buyer_ocr_parse_reason
-
-        _reset_rafael_buyer_ocr_parse_reason()
-
-    @unittest.mock.patch("parse_rafael_rfq._rafael_buyer_ocr_probe", return_value=(True, None))
-    @unittest.mock.patch("parse_rafael_rfq._buyer_name_from_ocr_space")
-    def test_detect_buyer_accepts_hebrew_from_ocr(
-        self,
-        mock_ocr: unittest.mock.Mock,
-        _probe: unittest.mock.Mock,
-    ) -> None:
-        from parse_rafael_rfq import _detect_buyer
-
-        mock_ocr.return_value = ("יוסי שני", None)
-        pages = [[{"text": "x@rafael.co.il", "x0": 100, "x1": 180, "top": 95}]]
-        name = _detect_buyer(Path("/tmp/rafael_buyer_test.pdf"), pages)
-        self.assertEqual(name, "יוסי שני")
-        st = rafael_buyer_ocr_api_status()
-        self.assertTrue(st["ready"])
-        self.assertIsNone(st["reason"])
-
-    @unittest.mock.patch("parse_rafael_rfq._rafael_buyer_ocr_probe", return_value=(True, None))
-    @unittest.mock.patch("parse_rafael_rfq._buyer_name_from_ocr_space")
-    def test_api_status_shows_no_hebrew_when_ocr_too_weak(
-        self,
-        mock_ocr: unittest.mock.Mock,
-        _probe: unittest.mock.Mock,
-    ) -> None:
-        from parse_rafael_rfq import _detect_buyer
-
-        mock_ocr.return_value = ("hello", "ocr_space_no_hebrew")
-        pages = [[{"text": "x@rafael.co.il", "x0": 100, "x1": 180, "top": 95}]]
-        name = _detect_buyer(Path("/tmp/rafael_buyer_test.pdf"), pages)
-        self.assertEqual(name, "")
-        st = rafael_buyer_ocr_api_status()
-        self.assertTrue(st["ready"])
-        self.assertEqual(st["reason"], "ocr_space_no_hebrew")
 
 
 if __name__ == "__main__":

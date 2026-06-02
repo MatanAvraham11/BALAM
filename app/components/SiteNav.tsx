@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 
 type SiteNavProps = {
   /** When set (e.g. product view on home), clicking the brand returns to the dashboard instead of navigating away */
@@ -11,9 +12,12 @@ export default function SiteNav({ onBrandClick }: SiteNavProps) {
 
   const brandInner = (
     <>
-      <img
+      <Image
         src="/branding/nativ-logo.svg"
         alt="Nativ"
+        width={96}
+        height={44}
+        unoptimized
         draggable={false}
         className="h-10 w-auto shrink-0 self-start object-contain sm:h-11"
       />

@@ -3,9 +3,9 @@ import { NextRequest, NextResponse } from "next/server";
 /**
  * Rafael BOM: always handled by this route.
  *
- * - `RAFAEL_BOM_WORKER_URL` — Docker worker (Tesseract + heb), e.g. Fly.io URL.
+ * - `RAFAEL_BOM_WORKER_URL` — optional Docker/Python worker, e.g. Fly.io URL.
  * - `PYDEV_API_BASE_URL` — local `next dev` + uvicorn on another port (see docs).
- * - Otherwise — same-origin `/api/internal/rafael-bom` → Vercel Python (no Tesseract there).
+ * - Otherwise — same-origin `/api/internal/rafael-bom` → Vercel Python.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

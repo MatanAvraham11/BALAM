@@ -55,7 +55,6 @@ from parse_rafael_rfq import (
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
-    rafael_buyer_ocr_api_status,
 )
 
 app = FastAPI()
@@ -98,6 +97,17 @@ def _verify_cookie(token: str | None) -> bool:
     if len(token) != len(expected):
         return False
     return hmac.compare_digest(token, expected)
+
+
+def _secure_auth_cookie(request: Request) -> bool:
+    forwarded_proto = (
+        request.headers.get("x-forwarded-proto") or ""
+    ).split(",")[0].strip().lower()
+    return (
+        request.url.scheme == "https"
+        or forwarded_proto == "https"
+        or os.environ.get("VERCEL") == "1"
+    )
 
 
 def _require_auth(request: Request) -> None:
@@ -157,18 +167,6 @@ def _passwords_match(entered: str, expected: str) -> bool:
 
 @app.post("/api/login")
 async def login(request: Request, body: LoginBody) -> JSONResponse:
-    # Temporary: confirm env binding in Vercel (never log the value)
-    print(
-        "[login] APP_PASSWORD set="
-        f"{bool(os.environ.get('APP_PASSWORD'))!s}; "
-        f"APP_SESSION_SECRET set="
-        f"{bool((os.environ.get('APP_SESSION_SECRET') or '').strip())!s}; "
-        f"Content-Type={request.headers.get('content-type', 'missing')!r}; "
-        f"password len={len(str(body.password))} (Pydantic)",
-        file=sys.stderr,
-        flush=True,
-    )
-
     expected = _app_password()
     if not expected:
         print(
@@ -213,7 +211,7 @@ async def login(request: Request, body: LoginBody) -> JSONResponse:
         value=cookie_value,
         httponly=True,
         samesite="lax",
-        secure=True,
+        secure=_secure_auth_cookie(request),
         path="/",
     )
     return resp
@@ -370,21 +368,15 @@ async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONRespons
         tsv_body = format_rafael_tsv_body(rows)
         txt_bytes = tsv_body.encode("windows-1255", errors="replace")
 
-        ocr_status = rafael_buyer_ocr_api_status()
-
         body: dict[str, Any] = {
             "rfq_number": rfq.rfq_number,
             "buyer_name": rfq.buyer_name,
             "submission_date": rfq.submission_date,
             "submission_due_date": rfq.submission_due_date,
-            "buyer_ocr_ready": ocr_status["ready"],
-            "buyer_ocr_reason": ocr_status["reason"],
             "rows": rows,
             "txt_base64": base64.b64encode(txt_bytes).decode(),
             "txt_filename": txt_basename,
         }
-        if "buyer_ocr_http_status" in ocr_status:
-            body["buyer_ocr_http_status"] = ocr_status["buyer_ocr_http_status"]
         return JSONResponse(content=body)
     finally:
         os.unlink(tmp_path)

@@ -35,16 +35,20 @@ export default function ProcessingStatus({ variant = "drawing" }: Props) {
       : variant === "rafael"
         ? RAFAEL_STATUSES
         : DRAWING_STATUSES;
+
+  return <ProcessingStatusTicker key={variant} statuses={statuses} />;
+}
+
+function ProcessingStatusTicker({ statuses }: { statuses: readonly string[] }) {
   const [index, setIndex] = useState(0);
 
   useEffect(() => {
-    setIndex(0);
     const timer = window.setInterval(() => {
       setIndex((current) => (current + 1) % statuses.length);
     }, 1500);
 
     return () => window.clearInterval(timer);
-  }, [statuses]);
+  }, [statuses.length]);
 
   return (
     <div className="rounded-lg border border-nativ-gold/20 bg-nativ-gold/5 px-4 py-3 text-sm font-semibold text-nativ-dark/80">
