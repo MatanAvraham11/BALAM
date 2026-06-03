@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import FileDropzone from "./FileDropzone";
+import { useDropzone, type Accept } from "react-dropzone";
 import InfoCard from "./InfoCard";
 import DataTable from "./DataTable";
 import ProcessingStatus from "./ProcessingStatus";
@@ -25,86 +25,243 @@ type RafaelResponse = {
   submission_date: string;
   /** Same as submission_date (V.6.0 alias). */
   submission_due_date?: string;
-  buyer_ocr_ready?: boolean;
-  buyer_ocr_reason?: string | null;
-  buyer_ocr_http_status?: number | null;
   rows: RafaelRow[];
   txt_base64: string;
   txt_filename: string;
 };
 
-/** Human-readable Hebrew for buyer field: success, infra failure, or weak OCR. */
-function rafaelBuyerDisplayLabel(
-  buyerName: string,
-  reason: string | null | undefined,
-  httpStatus?: number | null,
-): string {
-  const t = (buyerName || "").trim();
+type PlrRow = {
+  row_number: number;
+  operation_sequence: string;
+  component_item: string;
+  qty: string;
+};
 
-  if (t && t !== "OCR Failed") {
-    return t;
-  }
+type ZipResponse = {
+  rows: PlrRow[];
+  matched_file_count: number;
+  plreport_zip_count: number;
+  xls_file_count: number;
+  txt_base64: string;
+  txt_filename: string;
+};
 
-  if (t === "OCR Failed") {
-    const byReason: Record<string, string> = {
-      rafael_buyer_ocr_disabled:
-        "OCR לשם הקניין כבוי (הסר את RAFAEL_BUYER_OCR או הגדר לערך חיובי)",
-      ocr_space_api_key_missing:
-        "חסר מפתח OCR.space — הגדר OCR_SPACE_API_KEY בשרת (Vercel / worker)",
-      requests_import_failed:
-        "חסרה חבילת requests ב-Python (התקן requirements.txt)",
-      tesseract_not_on_path:
-        "חסר Tesseract בשרת (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
-      pytesseract_import_failed:
-        "שגיאת Tesseract/pytesseract (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
-      hebrew_lang_pack_missing:
-        "חבילת heb ל-Tesseract (הודעה ישנה — V.5.9 משתמש ב-OCR.space)",
-    };
-    return (
-      byReason[reason ?? ""] ??
-      "לא ניתן להריץ OCR לשם הקניין (בדוק OCR_SPACE_API_KEY ופריסת השרת)"
-    );
-  }
+const PLR_COLUMNS = ["מספר שורה", "Operation Sequence", "Component Item", "QTY"];
 
-  const weakOcr: Record<string, string> = {
-    ocr_space_no_hebrew:
-      "OCR רץ אך לא זוהו מספיק אותיות עבריות בשם הקניין (נסה תמונה/מנוע אחר או RAFAEL_OCR_DEBUG=1)",
-    ocr_space_parse_empty:
-      "OCR.space לא החזיר טקסט מהאזור שנחתך — בדוק את ה-PDF או את מפתח ה-API",
-    ocr_space_network_error:
-      "אין תקשורת יציבה ל-OCR.space (פסק זמן או רשת). ניסינו שלוש פעמים — נסה שוב בעוד רגע",
-    ocr_space_auth_error:
-      "מפתח OCR.space נדחה (401/403) — בדוק שהמפתח נכון ובתוקף בחשבון OCR.space",
-    ocr_space_rate_limited:
-      "הגעת למכסת בקשות ל-OCR.space (429). המערכת כבר ניסתה שוב אוטומטית — המתן דקה ונסה שוב",
-    ocr_space_payload_too_large:
-      "התמונה ל-OCR.space גדולה מדי (413) — נסה RFQ אחר או פנה לתמיכה",
-    ocr_space_quota_exceeded:
-      "נראה שנגמרו קרדיטים או מכסה ב-OCR.space — היכנס לחשבון ובדוק את התוכנית",
-    ocr_space_bad_request:
-      "בקשה לא תקינה ל-OCR.space (400) — נסה שוב; אם חוזר, שלח לתמיכה את קוד ה-HTTP מהשרת",
-    ocr_space_server_error:
-      "שרת OCR.space החזיר שגיאה (5xx) אחרי ניסיונות חוזרים — נסה שוב בעוד דקות",
-    ocr_space_client_error:
-      "תשובת לקוח לא צפויה מ-OCR.space (קוד 4xx) — בדוק מפתח, חשבון, או חסימת רשת",
-    ocr_space_http_error:
-      "תשובת HTTP לא צפויה מ-OCR.space — נסה שוב; אם חוזר, RAFAEL_OCR_DEBUG=1 בשרת לפרטים",
-    ocr_space_json_error:
-      "תשובה לא תקינה מ-OCR.space (לא JSON) — בדוק רשת או פרוקסי",
-  };
-  if (!t && reason && weakOcr[reason]) {
-    let msg = weakOcr[reason];
-    if (
-      typeof httpStatus === "number" &&
-      httpStatus > 0 &&
-      reason !== "ocr_space_network_error"
-    ) {
-      msg = `${msg} (קוד HTTP ${httpStatus})`;
+const RAFAEL_UPLOAD_ACCEPT: Accept = {
+  "application/pdf": [".pdf"],
+  "application/zip": [".zip"],
+  "application/x-zip-compressed": [".zip"],
+  "multipart/x-zip": [".zip"],
+  "application/octet-stream": [".pdf", ".zip"],
+};
+
+function apiErrorMessages(json: unknown, fallback: string): string[] {
+  if (json && typeof json === "object") {
+    const record = json as Record<string, unknown>;
+    const raw = record.error ?? record.detail;
+    if (Array.isArray(raw)) {
+      const messages = raw
+        .map((item) => String(item).trim())
+        .filter((item) => item.length > 0);
+      if (messages.length > 0) return messages;
     }
-    return msg;
+    if (typeof raw === "string" && raw.trim()) {
+      return [raw.trim()];
+    }
+  }
+  return [fallback];
+}
+
+function ZipErrorList({ errors }: { errors: string[] }) {
+  if (errors.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
+      <div className="font-semibold">שגיאה בפענוח ה-ZIP:</div>
+      {errors.length === 1 ? (
+        <div className="mt-1">{errors[0]}</div>
+      ) : (
+        <ul className="mt-1 list-inside list-disc space-y-0.5">
+          {errors.map((msg, i) => (
+            <li key={i}>{msg}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+type RafaelFilesDropzoneProps = {
+  pdfFile: File | null;
+  zipFile: File | null;
+  disabled?: boolean;
+  showNewRun: boolean;
+  onPdfFile: (file: File | null) => void;
+  onZipFile: (file: File | null) => void;
+  onError: (message: string) => void;
+  onNewRun: () => void;
+};
+
+function fileKind(file: File | null | undefined): "pdf" | "zip" | null {
+  const name = typeof file?.name === "string" ? file.name.toLowerCase() : "";
+  if (name.endsWith(".pdf")) return "pdf";
+  if (name.endsWith(".zip")) return "zip";
+  return null;
+}
+
+function uploadBatchError(files: Array<File | null | undefined>): string | null {
+  if (files.length > 2) {
+    return "ניתן להעלות עד שני קבצים: PDF אחד ו-ZIP אחד.";
   }
 
-  return t || "—";
+  if (files.some((file) => !fileKind(file))) {
+    return "סוג קובץ לא תקין. יש להעלות PDF ו/או ZIP בלבד.";
+  }
+
+  const pdfCount = files.filter((file) => fileKind(file) === "pdf").length;
+  const zipCount = files.filter((file) => fileKind(file) === "zip").length;
+  if (pdfCount > 1 || zipCount > 1) {
+    return "יש להעלות לכל היותר קובץ PDF אחד וקובץ ZIP אחד.";
+  }
+
+  return null;
+}
+
+function RafaelFilesDropzone({
+  pdfFile,
+  zipFile,
+  disabled,
+  showNewRun,
+  onPdfFile,
+  onZipFile,
+  onError,
+  onNewRun,
+}: RafaelFilesDropzoneProps) {
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    accept: RAFAEL_UPLOAD_ACCEPT,
+    multiple: true,
+    maxFiles: 2,
+    maxSize: 50 * 1024 * 1024,
+    disabled,
+    validator: (file) => {
+      if (!fileKind(file)) {
+        return {
+          code: "file-invalid-type",
+          message: "PDF or ZIP extension required",
+        };
+      }
+      return null;
+    },
+    onDrop: (accepted, rejected) => {
+      const droppedFiles = [
+        ...accepted,
+        ...rejected.map((rejection) => rejection.file),
+      ];
+      const batchError = uploadBatchError(droppedFiles);
+      if (batchError) {
+        onError(batchError);
+        return;
+      }
+
+      const tooLarge = rejected.some((rejection) =>
+        rejection.errors.some((error) => error.code === "file-too-large"),
+      );
+      if (tooLarge) {
+        onError("הקובץ גדול מדי. יש להעלות כל קובץ עד 50MB.");
+        return;
+      }
+
+      if (rejected.length > 0) {
+        onError("סוג קובץ לא תקין. יש להעלות PDF ו/או ZIP בלבד.");
+        return;
+      }
+
+      const pdfs = accepted.filter((candidate) => fileKind(candidate) === "pdf");
+      const zips = accepted.filter((candidate) => fileKind(candidate) === "zip");
+      if (pdfs[0]) onPdfFile(pdfs[0]);
+      if (zips[0]) onZipFile(zips[0]);
+    },
+    onDropRejected: (rejections) => {
+      const code = rejections[0]?.errors?.[0]?.code ?? "";
+      if (code === "file-too-large") {
+        onError("הקובץ גדול מדי. יש להעלות כל קובץ עד 50MB.");
+      } else if (code === "too-many-files") {
+        onError("ניתן להעלות עד שני קבצים: PDF אחד ו-ZIP אחד.");
+      } else {
+        onError("סוג קובץ לא תקין. יש להעלות PDF ו/או ZIP בלבד.");
+      }
+    },
+  });
+
+  return (
+    <div className="space-y-3">
+      <div
+        {...getRootProps()}
+        className={`w-full cursor-pointer rounded-xl border-2 border-dashed bg-white px-5 py-8 text-center shadow-sm transition-colors ${
+          isDragActive
+            ? "border-nativ-gold bg-nativ-gold/5"
+            : "border-gray-200 hover:border-nativ-gold/50 hover:bg-nativ-gold/5"
+        } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
+      >
+        <input {...getInputProps()} />
+        <p className="text-sm font-semibold text-gray-900">
+          גרור לכאן PDF של RFQ ו-ZIP של נתוני ייצור או לחץ לבחירה
+        </p>
+        <div className="mt-3 space-y-1 text-xs text-gray-600">
+          {pdfFile || zipFile ? (
+            <>
+              {pdfFile ? (
+                <p>
+                  PDF: <span className="font-semibold text-nativ-gold">{pdfFile.name}</span>
+                </p>
+              ) : (
+                <p className="text-gray-400">PDF חסר</p>
+              )}
+              {zipFile ? (
+                <p>
+                  ZIP: <span className="font-semibold text-nativ-gold">{zipFile.name}</span>
+                </p>
+              ) : (
+                <p className="text-gray-400">ZIP חסר</p>
+              )}
+            </>
+          ) : (
+            <p>PDF ו-ZIP בלבד · אפשר להעלות ביחד או אחד-אחד</p>
+          )}
+        </div>
+      </div>
+
+      {showNewRun ? (
+        <button
+          type="button"
+          onClick={onNewRun}
+          className="w-full rounded-lg border border-nativ-dark/20 bg-white px-4 py-2.5 font-semibold text-nativ-dark shadow-sm transition-colors hover:bg-gray-50"
+        >
+          להרצה חדשה
+        </button>
+      ) : null}
+
+      <div className="flex items-start gap-2 rounded-lg border border-nativ-gold/20 bg-nativ-gold/5 px-4 py-3 text-sm text-nativ-dark/80">
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          className="mt-0.5 h-5 w-5 shrink-0 text-nativ-gold"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="2"
+        >
+          <rect x="5" y="11" width="14" height="10" rx="2" />
+          <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+        </svg>
+        <p>
+          אבטחת מידע תעשייתית: ניתוח הקבצים מתבצע בשרת מקומי. הקבצים אינם
+          נשמרים, ואינם משותפים עם שום צד שלישי
+        </p>
+      </div>
+    </div>
+  );
 }
 
 const COLUMNS = [
@@ -120,24 +277,47 @@ const COLUMNS = [
 
 export default function RafaelTab() {
   const [file, setFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [processingStep, setProcessingStep] = useState<"pdf" | "zip" | null>(
+    null,
+  );
   const [data, setData] = useState<RafaelResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  function handleFile(f: File | null) {
-    setFile(f);
+  // ZIP state
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [zipData, setZipData] = useState<ZipResponse | null>(null);
+  const [zipErrors, setZipErrors] = useState<string[]>([]);
+  const isProcessing = processingStep !== null;
+
+  function clearResults() {
     setData(null);
     setError(null);
     setSuccess(null);
+    setZipData(null);
+    setZipErrors([]);
+  }
+
+  function handleFile(f: File | null) {
+    setFile(f);
+    clearResults();
+  }
+
+  function handleZipFile(f: File | null) {
+    setZipFile(f);
+    clearResults();
+  }
+
+  function handleUploadError(message: string) {
+    clearResults();
+    setError(message);
   }
 
   async function handleExtract() {
-    if (!file) return;
-    setLoading(true);
-    setError(null);
-    setSuccess(null);
-    setData(null);
+    if (!file || !zipFile || isProcessing) return;
+    let step: "pdf" | "zip" = "pdf";
+    setProcessingStep(step);
+    clearResults();
 
     try {
       const fd = new FormData();
@@ -145,23 +325,42 @@ export default function RafaelTab() {
       const res = await fetch("/api/rafael-bom", { method: "POST", body: fd });
       const json = await res.json();
       if (!res.ok) {
-        const detail =
-          typeof json?.error === "string"
-            ? json.error
-            : typeof json?.detail === "string"
-              ? json.detail
-              : undefined;
+        const detail = apiErrorMessages(json, "שגיאה בפענוח ה-PDF")[0];
         setError(appendDataCheckHint(detail, "rafael"));
         return;
       }
-      setData(json as RafaelResponse);
+      const pdfData = json as RafaelResponse;
+      const zipParentPn = (pdfData.rows?.[0]?.["מקט רפאל"] || "").trim();
+
+      step = "zip";
+      setProcessingStep(step);
+      const zipFd = new FormData();
+      zipFd.append("file", zipFile);
+      zipFd.append("parent_part_number", zipParentPn);
+      const zipRes = await fetch("/api/rafael-zip", {
+        method: "POST",
+        body: zipFd,
+      });
+      const zipJson = await zipRes.json();
+      if (!zipRes.ok) {
+        setZipErrors(apiErrorMessages(zipJson, "שגיאה בפענוח ה-ZIP"));
+        return;
+      }
+      const parsedZip = zipJson as ZipResponse;
+
+      setData(pdfData);
+      setZipData(parsedZip);
       setSuccess(
-        `הנתונים חולצו בהצלחה – נמצאו ${json.rows.length} שורות אספקה`,
+        `הנתונים חולצו בהצלחה – נמצאו ${pdfData.rows.length} שורות אספקה ו-${parsedZip.rows.length} שורות PLR`,
       );
     } catch {
-      setError(appendDataCheckHint("שגיאה בתקשורת עם השרת", "rafael"));
+      if (step === "zip") {
+        setZipErrors(["שגיאה בתקשורת עם השרת בעת עיבוד ה-ZIP"]);
+      } else {
+        setError(appendDataCheckHint("שגיאה בתקשורת עם השרת", "rafael"));
+      }
     } finally {
-      setLoading(false);
+      setProcessingStep(null);
     }
   }
 
@@ -174,78 +373,70 @@ export default function RafaelTab() {
     );
   }
 
-  function handleNewRun() {
-    setFile(null);
-    setData(null);
-    setError(null);
-    setSuccess(null);
+  function handleDownloadPlrTxt() {
+    if (!zipData) return;
+    downloadBase64(
+      zipData.txt_base64,
+      zipData.txt_filename,
+      "text/plain;charset=windows-1255",
+    );
   }
 
-  const showNewRun = Boolean(data || error || success);
+  function handleNewRun() {
+    setFile(null);
+    setZipFile(null);
+    setProcessingStep(null);
+    clearResults();
+  }
+
+  const showNewRun = Boolean(
+    data || error || success || zipData || zipErrors.length,
+  );
 
   const buyerDisplay = useMemo(() => {
     if (!data) return "—";
-    return rafaelBuyerDisplayLabel(
-      data.buyer_name,
-      data.buyer_ocr_reason,
-      data.buyer_ocr_http_status,
-    );
+    return data.buyer_name.trim() || "—";
   }, [data]);
 
   const tableRows = useMemo(() => {
     if (!data) return [];
-    const label = rafaelBuyerDisplayLabel(
-      data.buyer_name,
-      data.buyer_ocr_reason,
-      data.buyer_ocr_http_status,
-    );
-    const replaceBuyerCell =
-      data.buyer_name === "OCR Failed" ||
-      (!(data.buyer_name || "").trim() && Boolean(data.buyer_ocr_reason));
-    if (!replaceBuyerCell) return data.rows;
-    return data.rows.map((row) => ({
-      ...row,
-      "שם קניין": label,
-    }));
+    return data.rows;
   }, [data]);
 
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-gray-700">
-        העלה קובץ RFQ של רפאל וקבל בשניות את כל שורות האספקה (מק״ט, כמות,
-        שבועות ARO, FAI) מוכנות לשימוש ב-Excel.
+        העלה קובץ RFQ של רפאל וקובץ ZIP של נתוני ייצור כדי לקבל את שורות
+        האספקה ואת טבלת ה-PLR מוכנות לשימוש ב-Excel.
       </p>
 
-      <FileDropzone
-        label="גרור לכאן קובץ RFQ של רפאל (PDF) או לחץ לבחירה"
-        file={file}
-        onFile={handleFile}
-        onError={(msg) => setError(msg)}
-        disabled={loading}
-        belowDropzone={
-          showNewRun ? (
-            <button
-              type="button"
-              onClick={handleNewRun}
-              className="w-full rounded-lg border border-nativ-dark/20 bg-white px-4 py-2.5 font-semibold text-nativ-dark shadow-sm transition-colors hover:bg-gray-50"
-            >
-              להרצה חדשה
-            </button>
-          ) : null
-        }
+      <RafaelFilesDropzone
+        pdfFile={file}
+        zipFile={zipFile}
+        disabled={isProcessing}
+        showNewRun={showNewRun}
+        onPdfFile={handleFile}
+        onZipFile={handleZipFile}
+        onError={handleUploadError}
+        onNewRun={handleNewRun}
       />
 
-      {file && (
-        <button
-          onClick={handleExtract}
-          disabled={loading}
-          className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {loading ? "מעבד קובץ..." : "חלץ נתונים"}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={handleExtract}
+        disabled={!file || !zipFile || isProcessing}
+        className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {processingStep === "pdf"
+          ? "מעבד PDF..."
+          : processingStep === "zip"
+            ? "מעבד ZIP..."
+            : "חלץ PDF ו-ZIP"}
+      </button>
 
-      {loading && <ProcessingStatus variant="rafael" />}
+      {isProcessing && <ProcessingStatus variant="rafael" />}
+
+      {!data && <ZipErrorList errors={zipErrors} />}
 
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
@@ -259,7 +450,7 @@ export default function RafaelTab() {
         </div>
       )}
 
-      {data && (
+      {data && zipData && (
         <>
           <InfoCard
             items={[
@@ -280,6 +471,49 @@ export default function RafaelTab() {
             הורד קובץ TXT (מופרד בטאב · Excel)
           </button>
           <DataTable columns={COLUMNS} rows={tableRows} />
+
+          <div className="mt-6 flex flex-col gap-4 border-t border-gray-200 pt-4">
+            <div className="text-base font-bold text-nativ-dark">
+              נתוני ייצור PLR
+            </div>
+
+            <div className="flex items-center gap-3 text-sm text-gray-600">
+              <span>
+                נמצאו{" "}
+                <span className="font-semibold text-nativ-dark">
+                  {zipData.rows.length}
+                </span>{" "}
+                שורות מתוך{" "}
+                <span className="font-semibold">
+                  {zipData.xls_file_count}
+                </span>{" "}
+                קבצי XLS
+                {zipData.matched_file_count > 0 && (
+                  <span className="text-green-700">
+                    {" "}({zipData.matched_file_count} תואמים למק״ט הורה)
+                  </span>
+                )}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleDownloadPlrTxt}
+              className="w-full rounded-lg bg-nativ-gold px-4 py-2.5 font-semibold text-white shadow-sm transition-colors hover:bg-nativ-gold-hover"
+            >
+              הורד קובץ PLR TXT (מופרד בטאב · Excel)
+            </button>
+
+            <DataTable
+              columns={PLR_COLUMNS}
+              rows={zipData.rows.map((r) => ({
+                "מספר שורה": r.row_number,
+                "Operation Sequence": r.operation_sequence,
+                "Component Item": r.component_item,
+                "QTY": r.qty,
+              }))}
+            />
+          </div>
         </>
       )}
     </div>

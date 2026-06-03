@@ -33,7 +33,7 @@ if _API_DIR not in sys.path:
 import eval_type_backport  # noqa: F401  # Pydantic needs this on Py<3.10 for PEP604 unions in parsers
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -45,15 +45,20 @@ from parse_balam import (
     revision_for_export,
 )
 from fai_parser import items_to_csv, run_fai
+from parse_rafael_plr_zip import (
+    PlrZipParseError,
+    extract_plr_rows_from_zip,
+    format_plr_tsv_body,
+)
 from parse_rafael_rfq import (
     RafaelRfq,
     flatten_rafael_to_rows,
     format_rafael_tsv_body,
     parse_rafael_rfq,
-    rafael_buyer_ocr_api_status,
 )
 
 app = FastAPI()
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +100,17 @@ def _verify_cookie(token: str | None) -> bool:
     return hmac.compare_digest(token, expected)
 
 
+def _secure_auth_cookie(request: Request) -> bool:
+    forwarded_proto = (
+        request.headers.get("x-forwarded-proto") or ""
+    ).split(",")[0].strip().lower()
+    return (
+        request.url.scheme == "https"
+        or forwarded_proto == "https"
+        or os.environ.get("VERCEL") == "1"
+    )
+
+
 def _require_auth(request: Request) -> None:
     token = request.cookies.get(_AUTH_COOKIE)
     if not _verify_cookie(token):
@@ -122,10 +138,28 @@ async def _global_exc_handler(_request: Request, exc: Exception) -> JSONResponse
             status_code=exc.status_code,
             content=_http_exc_body(exc),
         )
+    print(
+        f"[unhandled] {type(exc).__name__}: {exc}",
+        file=sys.stderr,
+        flush=True,
+    )
     return JSONResponse(
         status_code=500,
-        content={"error": str(exc)},
+        content={"error": "Internal server error"},
     )
+
+
+async def _read_upload_bytes(file: UploadFile, *, kind: str) -> bytes:
+    """Read one upload with a hard cap before parser-specific processing."""
+    contents = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(contents) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"קובץ {kind} גדול מדי. יש להעלות קובץ עד 50MB.",
+        )
+    if not contents:
+        raise HTTPException(status_code=400, detail=f"קובץ {kind} ריק.")
+    return contents
 
 
 # ---------------------------------------------------------------------------
@@ -152,18 +186,6 @@ def _passwords_match(entered: str, expected: str) -> bool:
 
 @app.post("/api/login")
 async def login(request: Request, body: LoginBody) -> JSONResponse:
-    # Temporary: confirm env binding in Vercel (never log the value)
-    print(
-        "[login] APP_PASSWORD set="
-        f"{bool(os.environ.get('APP_PASSWORD'))!s}; "
-        f"APP_SESSION_SECRET set="
-        f"{bool((os.environ.get('APP_SESSION_SECRET') or '').strip())!s}; "
-        f"Content-Type={request.headers.get('content-type', 'missing')!r}; "
-        f"password len={len(str(body.password))} (Pydantic)",
-        file=sys.stderr,
-        flush=True,
-    )
-
     expected = _app_password()
     if not expected:
         print(
@@ -208,7 +230,7 @@ async def login(request: Request, body: LoginBody) -> JSONResponse:
         value=cookie_value,
         httponly=True,
         samesite="lax",
-        secure=True,
+        secure=_secure_auth_cookie(request),
         path="/",
     )
     return resp
@@ -235,7 +257,7 @@ async def auth_check(request: Request) -> JSONResponse:
 async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
     _require_auth(request)
 
-    contents = await file.read()
+    contents = await _read_upload_bytes(file, kind="PDF")
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
@@ -306,7 +328,7 @@ async def balam_endpoint(request: Request, file: UploadFile) -> JSONResponse:
 async def drawing_endpoint(request: Request, file: UploadFile) -> JSONResponse:
     _require_auth(request)
 
-    contents = await file.read()
+    contents = await _read_upload_bytes(file, kind="PDF")
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
@@ -350,7 +372,7 @@ async def drawing_endpoint(request: Request, file: UploadFile) -> JSONResponse:
 async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONResponse:
     _require_auth(request)
 
-    contents = await file.read()
+    contents = await _read_upload_bytes(file, kind="PDF")
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
@@ -365,21 +387,79 @@ async def rafael_bom_endpoint(request: Request, file: UploadFile) -> JSONRespons
         tsv_body = format_rafael_tsv_body(rows)
         txt_bytes = tsv_body.encode("windows-1255", errors="replace")
 
-        ocr_status = rafael_buyer_ocr_api_status()
-
         body: dict[str, Any] = {
             "rfq_number": rfq.rfq_number,
             "buyer_name": rfq.buyer_name,
             "submission_date": rfq.submission_date,
             "submission_due_date": rfq.submission_due_date,
-            "buyer_ocr_ready": ocr_status["ready"],
-            "buyer_ocr_reason": ocr_status["reason"],
             "rows": rows,
             "txt_base64": base64.b64encode(txt_bytes).decode(),
             "txt_filename": txt_basename,
         }
-        if "buyer_ocr_http_status" in ocr_status:
-            body["buyer_ocr_http_status"] = ocr_status["buyer_ocr_http_status"]
         return JSONResponse(content=body)
     finally:
         os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/rafael-zip
+# ---------------------------------------------------------------------------
+
+@app.post("/api/rafael-zip")
+@app.post("/api/internal/rafael-zip")
+async def rafael_zip_endpoint(
+    request: Request,
+    file: UploadFile,
+    parent_part_number: str = Form(""),
+) -> JSONResponse:
+    """Extract PLR rows from a Rafael manufacturing transfer ZIP.
+
+    Accepts:
+        file              – multipart/form-data: the ZIP file bytes.
+        parent_part_number – string form field: first rafael_pn from the RFQ PDF.
+
+    Returns JSON::
+
+        {
+          "rows": [
+            {
+              "row_number": 1,
+              "operation_sequence": "...",
+              "component_item": "...",
+              "qty": "..."
+            },
+            …
+          ],
+          "matched_file_count": N,
+          "plreport_zip_count": P,
+          "xls_file_count": M,
+          "txt_base64": "...",
+          "txt_filename": "..."
+        }
+    """
+    _require_auth(request)
+
+    zip_bytes = await _read_upload_bytes(file, kind="ZIP")
+
+    try:
+        result = extract_plr_rows_from_zip(
+            zip_bytes,
+            (parent_part_number or "").strip(),
+        )
+    except PlrZipParseError as exc:
+        detail: str | list[str]
+        detail = exc.messages[0] if len(exc.messages) == 1 else exc.messages
+        raise HTTPException(status_code=400, detail=detail) from exc
+
+    original_name = file.filename or "rafael_plr"
+    txt_basename = original_name.rsplit(".", 1)[0] + "_plr.txt"
+    tsv_body = format_plr_tsv_body(result["rows"])
+    txt_bytes = tsv_body.encode("windows-1255", errors="replace")
+
+    return JSONResponse(
+        content={
+            **result,
+            "txt_base64": base64.b64encode(txt_bytes).decode(),
+            "txt_filename": txt_basename,
+        }
+    )

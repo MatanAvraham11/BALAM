@@ -5,7 +5,8 @@
     { "source": "/api/auth", "destination": "/api/index" },
     { "source": "/api/balam", "destination": "/api/index" },
     { "source": "/api/drawing", "destination": "/api/index" },
-    { "source": "/api/internal/rafael-bom", "destination": "/api/index" }
+    { "source": "/api/internal/rafael-bom", "destination": "/api/index" },
+    { "source": "/api/internal/rafael-zip", "destination": "/api/index" }
   ],
   "build": {
     "env": {

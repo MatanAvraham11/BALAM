@@ -1,5 +1,7 @@
 "use client";
 
+import Image from "next/image";
+
 const PARTNERS = [
   { src: "/branding/partners/yaaf.svg", alt: "YAAF" },
   { src: "/branding/partners/uptimum.svg", alt: "Uptimum" },
@@ -15,11 +17,12 @@ function LogoRow() {
           key={src}
           className="flex shrink-0 items-center justify-center"
         >
-          <img
+          <Image
             src={src}
             alt={alt}
-            loading="lazy"
-            decoding="async"
+            width={216}
+            height={96}
+            unoptimized
             draggable={false}
             className="h-[3.75rem] w-auto max-w-[13.5rem] object-contain object-center mix-blend-multiply grayscale transition-[filter,opacity] duration-300 ease-out hover:grayscale-0 sm:h-[4.5rem] md:h-[5.25rem] lg:h-24 sm:max-w-[16.5rem] md:max-w-none"
           />
