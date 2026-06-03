@@ -142,9 +142,14 @@ _BUYER_RE = re.compile(r'(.+?) ןיינק םש')
 _EXPECTED_LINES_RE = re.compile(r'(\d+) תורוש רפסמ')
 _LINE_START_RE = re.compile(r'הרוש רפסמ')
 _SKU_RE = re.compile(r'([\w.\-/]+) קפס ט"קמ')
-_QTY_RE = re.compile(r'([\d.]+) תשרדנ תומכ')
+_QUANTITY_NUMBER_RE = r'(?<![\d,.])((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?![\d,.])'
+_QTY_RE = re.compile(rf'{_QUANTITY_NUMBER_RE} תשרדנ תומכ')
 _REV_RE = re.compile(r'([A-Za-z0-9\-]+):האצוה')
 _MISSING_REV = 'לא מצוין בבל"מ'
+
+
+def _parse_quantity(value: str) -> float:
+    return float(value.replace(",", ""))
 
 
 def revision_for_export(revision: str) -> str:
@@ -187,7 +192,7 @@ def parse_with_regex(text: str) -> PurchaseOrder | None:
 
         line_items.append(LineItem(
             supplier_sku=sku_m.group(1).strip(),
-            required_quantity=float(qty_m.group(1)),
+            required_quantity=_parse_quantity(qty_m.group(1)),
             revision=revision,
         ))
 
